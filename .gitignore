@@ -1,0 +1,47 @@
+# ---------------------------------------------------------------------------
+# DATOS DE CLIENTES REALES -- nada de esto sale de la maquina.
+#
+# Azul es produccion sobre cuentas de clientes reales. Las salidas de una corrida
+# (capturas de pantalla, CSV de suscripciones, bitacora de progreso) llevan nombres,
+# numeros de linea, numeros de cuenta y saldos. Publicar eso seria peor que cualquier
+# fallo del codigo, y subirlo a un remoto NO se deshace: queda en el historial, en los
+# forks y en las caches.
+# ---------------------------------------------------------------------------
+
+# Todas las salidas de corrida: capturas, CSV por cliente, recortes de zoom, incompletas
+azul/salidas/
+
+# Las bases de datos terminadas y la memoria que las numera. Los .docx ya estarian cubiertos
+# por la regla de mas abajo, pero el registro es un .json y NO lo estaria: lleva el numero de
+# cuenta y la razon social de cada cliente escrito. Se excluye la carpeta entera.
+azul/bases/
+
+# Bitacora en vivo: una linea por paso, con numeros de linea de clientes reales
+azul/progreso.txt
+
+# CSV de la ultima lectura: numeros, planes, dispositivos, fechas de un cliente real
+azul/azul_renovables.csv
+
+# La lista de ordenes exportada de Excel: numeros de cuenta y razones sociales reales de
+# TODOS los clientes del dia. Es el archivo con mas datos personales del proyecto.
+azul/lista_ordenes.csv
+
+# Arboles de respaldo de sesiones de optimizacion. Son copias del codigo mas sus propias
+# salidas; para eso esta el historial de git.
+azul/respaldo-optimizacion-*/
+azul/respaldo-capturas/
+
+# Documentos de Word generados
+*.docx
+*.doc
+~$*
+
+# Ajustes locales de la herramienta, no del proyecto. La carpeta entera: ahi dentro aparecen
+# tambien archivos de estado (bloqueos, tareas programadas) que son de esta maquina y de nadie
+# mas, y que no significan nada en el equipo que clone el repositorio.
+.claude/
+
+# Temporales de Office y del sistema
+*.tmp
+Thumbs.db
+desktop.ini
