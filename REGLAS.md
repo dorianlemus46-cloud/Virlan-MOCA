@@ -153,8 +153,11 @@ referencia para orientarse, no valores que el código deba usar**.
   se sigue de largo.
 - Si una corrida quedó incompleta → **se pregunta antes de escribir en Word**. Meter
   una tabla incompleta en el documento del cliente es peor que esperar.
-- Si hubiera más de un documento de Word abierto → **preguntar cuál** antes de
-  escribir.
+- ~~Si hubiera más de un documento de Word abierto → **preguntar cuál** antes de
+  escribir.~~ **Superada el 09/09/2026, autorizada por Dorian el 10/09/2026.** El lote
+  crea la base, la abre, escribe y la cierra él mismo: no hay documento elegido a mano
+  que confundir, y **Word no se abre a mano**. Sigue vigente en un solo caso: llamar a
+  `agregar_a_word.ps1` suelto y sin decirle el documento, que es como se usaba antes.
 - "Sin datos" no siempre es duda: la línea activa sin bloque `Compromiso` es una
   SIM/eSIM sin contrato, un caso conocido y clasificado (ver `docs/decisiones.md`).
 
