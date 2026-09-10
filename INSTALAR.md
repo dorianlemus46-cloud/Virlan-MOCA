@@ -13,12 +13,17 @@ Cuando termines, el punto de entrada es [`ARRANQUE.md`](ARRANQUE.md).
 | Qué | Por qué | Cómo compruebas que está |
 |---|---|---|
 | **Azul** instalado y con sesión iniciada | Es lo que se lee | La ventana *Ejecutivo de interacción del cliente de AT&T* abierta |
-| **Microsoft Word** | Ahí se escriben las bases | Se abre |
+| **Microsoft Word** | Ahí se escriben las bases | Que esté instalado. **No hay que abrirlo** |
 | **Windows PowerShell 5.1** | Es el intérprete de todo el proyecto | `$PSVersionTable.PSVersion` |
 | **El JRE de 32 bits de Azul** | El puente de accesibilidad vive ahí | Existe `C:\Program Files (x86)\Java\` |
 
 No hay nada que instalar del proyecto: no usa paquetes, ni módulos externos, ni
 compilación previa. Se clona y se corre.
+
+> **Solo Azul se abre a mano.** Word lo levanta el lote cuando le toca escribir, y lo cierra
+> al terminar. Excel se usa una vez, aparte, para exportar la lista a CSV, y después no
+> interviene. Si algo te pide abrir Excel o Word para correr una corrida, está
+> desactualizado: son restos del sistema anterior.
 
 ## 2. Habilitar el Java Access Bridge
 
@@ -65,8 +70,9 @@ Si alguno falla, **para aquí**. Ninguno de ellos necesita Azul, así que un fal
 entorno o del código, y correr contra Azul con un gate en rojo es exactamente lo que estas
 comprobaciones existen para impedir.
 
-Hay un quinto, `probar_word.ps1`, que abre Word con un documento propio. Córrelo cuando
-puedas dejar Word trabajando solo un momento.
+Hay un quinto, `probar_word.ps1`, que levanta su propio Word con un documento propio y lo
+cierra al terminar. **No hace falta que cierres el Word que tengas abierto**: avisa si lo
+detecta y no toca nada tuyo. Córrelo cuando puedas dejar la pantalla un momento.
 
 ## 4. La lista de órdenes
 

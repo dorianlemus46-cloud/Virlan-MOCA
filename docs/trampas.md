@@ -248,8 +248,12 @@ riesgo que el cambio de alcance *crea*, que es igual de válido y más fácil de
   sistema (captura automática, desde el 08/09/2026), y ese panel tapa la tabla de
   Suscripciones. La guarda sigue haciendo falta: si un tope de tiempo mata la corrida a
   media captura, el panel puede quedar abierto para el cliente siguiente.
-- **Comprobar el documento destino ANTES del primer cliente** — Word abierto, cuál de todos,
-  con ruta en disco, y que no sea autorrecuperado. Ahora el documento lo elige una persona.
+- ~~**Comprobar el documento destino ANTES del primer cliente**~~ — **ya no rige desde el
+  09/09/2026, y no se abre Word a mano.** Nació cuando el documento lo elegía una persona y
+  había que averiguar cuál de los abiertos era el bueno. Hoy el lote crea la base, la abre,
+  escribe y la cierra él solo. No hay documento que comprobar. La comprobación sigue viva
+  únicamente en `agregar_a_word.ps1` cuando se le llama suelto y sin decirle el documento,
+  que es como se usaba antes.
 - **Denunciar en voz alta toda fila descartada de la lista de órdenes.** Con el libro vivo el
   descarte silencioso solo se comía el encabezado; con un CSV se come clientes.
 - **Avisar cuando la razón social viene vacía.** La guarda que impide entrar al cliente
@@ -264,12 +268,12 @@ riesgo que el cambio de alcance *crea*, que es igual de válido y más fácil de
 | `diagnostico\verificar.ps1` | ASCII, parseo y compilación del C# de los tres archivos que lo llevan. **Antes de nada.** |
 | `diagnostico\probar_captura.ps1` | Prueba el C# de `captura.ps1` sobre imágenes sintéticas: que el muestreo nuevo por `LockBits` dé el mismo número que el viejo por `GetPixel` (trampa 14), y que la garantía de pantalla estable no baje de 1.4 s. **No toca Azul.** |
 | `diagnostico\probar_lista.ps1` | Prueba el lector de la lista de órdenes (`lista.ps1`): las tres codificaciones (trampa 15), el separador, las cuentas repetidas, las filas descartadas y las columnas que faltan. **No toca Azul, ni Excel, ni Word.** |
-| `diagnostico\probar_word.ps1` | Prueba la forma del bloque que se escribe en el documento: orden, el hueco `[imagen]`, y que las tablas no se fundan (trampa 12). Levanta su propio Word y **se niega a correr si Word ya está abierto**. **No toca Azul.** |
+| `diagnostico\probar_word.ps1` | Prueba la forma del bloque que se escribe en el documento: orden, el hueco `[imagen]`, y que las tablas no se fundan (trampa 12). Levanta su propio Word y su propio documento. **Ya no se niega si Word está abierto** (cambio del 09/09/2026): avisa, y no toca nada de lo que tengas abierto. **No toca Azul.** |
 | `diagnostico\jab_now.ps1` | Estado actual de Azul: marcos, tablas y si el botón está habilitado. Lo primero cuando algo no cuadra. |
 | `diagnostico\jab_attrs.ps1` | Vuelca los nombres reales de los atributos. Cuando todo sale `sin nodo Plan Móvil`. |
 | `diagnostico\jab_cliente.ps1` | Busca nodos en el árbol (`-Buscar <texto>`, `-Todo`). Prueba decisiva de si un widget existe para el puente. |
 | `diagnostico\zoom.ps1` | Recorta y amplía un pedazo de la ventana con rejilla rotulada en coordenadas de origen. Para medir un ícono al píxel. Acepta `-Fuente` para medir sobre una captura vieja, sin Azul abierto. |
-| `diagnostico\excel_ordenes.ps1` | Lista libros, hojas y columnas del Excel abierto. |
+| `diagnostico\excel_ordenes.ps1` | Lista libros, hojas y columnas del Excel abierto. **Solo para depurar una exportación que salió rara**, y entonces sí hay que tener el libro abierto. **Excel no interviene en una corrida**: la lista sale de un CSV en disco desde el 05/09/2026. |
 
 La tabla de **mensajes de error concretos** y qué hacer con cada uno nunca se mudó aquí, y
 `azul\LEEME.md` ya no está en el proyecto. Sigue entera en el historial, en la sección

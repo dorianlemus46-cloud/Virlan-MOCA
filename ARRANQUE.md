@@ -76,6 +76,12 @@ $ps32 = "C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe"
 `azul\lista_ordenes.csv` exportado desde Excel (*hoja `resultData` → Guardar como → CSV*, sin
 borrar columnas). **Word ya no hace falta abrirlo**: el lote lo levanta si no está, escribe en
 la base que toca y la cierra al terminar. Si ya tenías Word abierto, usa ese y no te lo cierra.
+
+> **Ni Excel ni Word se abren a mano. La única aplicación que tiene que estar abierta es
+> Azul.** Excel se usa una vez, antes y aparte, para exportar el CSV; después no interviene y
+> no hace falta que siga abierto. Se dice aquí porque la documentación vieja pedía las dos
+> cosas y todavía quedan rastros: si algo te manda abrir Excel o Word para correr el lote,
+> está desactualizado.
 **No tocar Azul mientras corre.** Todo lo que toque el puente va en el PowerShell de
 **32 bits**; `lote.ps1` corre en el de 64 y lanza a los hijos en el de 32.
 **Bash está bloqueado en esta máquina**: todo por PowerShell.
