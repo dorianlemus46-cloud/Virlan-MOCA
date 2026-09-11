@@ -71,7 +71,8 @@ Llena un formulario de consulta. No modifica ningún dato del cliente.
 `Ver Productos Asignados` · `Cerrar` · `Buscar Ahora` · `Seleccionar` ·
 la pestaña `Suscripciones` · el enlace `Cliente:` · el ícono de teléfono con lupa ·
 la X de la barra de título del marco del cliente · la X de la barra de título del
-marco de interacción (`Inicio de Interacción...`).
+marco de interacción (`Inicio de Interacción...`) · **`Descartar`, y solo en el aviso
+que sale al cerrar una de esas dos subventanas — condiciones exactas en el punto 4.1**.
 
 ---
 
@@ -85,8 +86,43 @@ Ningún botón cuyo nombre sea o contenga:
 | **`Exportar`** | En la interfaz de Azul. Decisión tomada: no se usan; se mantiene el ciclo 1. |
 | **`Guardar`** | En cualquier pantalla. |
 | **`Aprobar`** | En cualquier pantalla. |
-| **`Descartar`** | En cualquier pantalla. |
+| **`Descartar`** | En cualquier pantalla. **Una sola excepción, detallada justo abajo.** |
 | **`Eliminar`** | En cualquier pantalla. |
+
+### 4.1 La única excepción: `Descartar` en el aviso al cerrar una subventana
+
+*(autorizada por Dorian el 11/09/2026)*
+
+Se permite pulsar **`Descartar`** en **un solo sitio y bajo todas estas condiciones a la
+vez**. Si falta una, no se pulsa.
+
+1. Es el **cuadro de aviso que Azul saca en el centro de la pantalla** al intentar cerrar
+   una subventana del cliente: el panel `Cuenta: <nombre>` o el marco
+   `Inicio de Interacción`.
+2. Ese aviso apareció **como consecuencia directa de nuestro propio clic** en la X de la
+   barra de título de una de esas dos subventanas, en el mismo momento. Un aviso que ya
+   estuviera en pantalla antes no cuenta: ese se deja como está.
+3. Lo que se descarta es **el borrador de interacción que creó nuestra propia navegación**,
+   el que marca el asterisco en el título. **No** se descarta ningún registro del cliente,
+   ninguna renovación, ningún dato guardado y ninguna decisión de negocio.
+4. Antes de pulsar se **anota al progreso el texto del aviso**, para que quede por escrito
+   qué se aceptó y cuándo.
+5. Tras pulsarlo se **sigue cerrando las subventanas que queden**, hasta que las bandas
+   `Cuenta:` y `Cliente:` de arriba vuelvan a quedar vacías.
+
+Fuera de eso, `Descartar` sigue prohibido en **cualquier** pantalla, formulario, barra de
+herramientas o cuadro de diálogo, incluso si el texto se parece. Si el aviso dice algo
+distinto de lo esperado, ofrece otros botones, o aparece en cualquier otro momento: **no se
+pulsa nada**, se deja la pantalla como está y se avisa a Dorian.
+
+> **Por qué se autorizó.** Medido el 11/09/2026: sin pulsar ese aviso el cierre de la
+> subventana falla en silencio, el cliente siguiente hereda la subventana del anterior y
+> pasa a costar 120.777 consultas al puente y 38 s, contra 13.200 y 6 s de un cliente
+> limpio. El 10/09/2026 el mismo problema costó un cliente entero. Hasta esa fecha Dorian
+> pulsaba el aviso a mano, lo que obligaba a estar delante durante toda la corrida.
+> Esto **corrige** la nota del ciclo 3, que daba por hecho que cerrar con la X nunca pedía
+> confirmación: eso se comprobó el 09/09/2026 con los campos vacíos, y no vale cuando la
+> navegación ya dejó el borrador marcado con asterisco.
 
 Tampoco se pulsan los otros tres íconos de la fila del teléfono con lupa —
 persona+lupa, dos personas+lupa y lentes— ni el campo de texto suelto a su izquierda.

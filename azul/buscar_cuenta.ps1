@@ -612,15 +612,49 @@ public static class Busca {
   // como 'page tab', con geometria y con el estado 'selected' que dice cual esta abierta.
   // Pero vienen con act=no: no tienen accion de accesibilidad, asi que hay que pulsarlas de
   // verdad. Otra vez lo mismo: el puente las ve y no las conduce.
-  public static string GeoPestana(string nombre){
+  //
+  // La pestana se busca UNA vez y el nodo se guarda. MEDIDO el 11/09/2026 sobre 27 clientes
+  // con el contador de llamadas JAB que ya deja este archivo en el progreso: un recorrido
+  // completo del arbol cuesta ~22.000 llamadas, y el paso de la pestana gastaba de 90.000 a
+  // 109.000 -- cuatro o cinco recorridos -- contra ~22.000, uno solo, en los clientes donde
+  // la pestana ya estaba abierta de antes. Los tres sitios de abajo recorrian el arbol entero
+  // por su cuenta, y EsperarPestana lo recorria ADEMAS en cada vuelta de sondeo. De ahi salia
+  // el tope de tramo, que entonces era de 10 s: se los comia el puente buscando cuatro veces
+  // la misma pestana, no Azul contestando. Con el cache puesto y MEDIDO el mismo dia sobre un
+  // cliente sano, el tramo bajo a 40.604 llamadas y 9 s, y por eso el tope subio a 20 s.
+  //
+  // Es el mismo reparto que ya hacen EsperarCIM y MarcoPanes mas arriba: el recorrido completo
+  // FUERA de los bucles de espera, y dentro solo lecturas baratas sobre un nodo ya conocido.
+  //
+  // OJO, limitacion que esto NO arregla: First() devuelve la PRIMERA pestana con ese nombre en
+  // orden de arbol. Con un marco de interaccion viejo abierto -- que pasa, y paso el 11/09 --
+  // esa puede ser la del marco anterior, y entonces el clic va a la pestana equivocada. Es
+  // candidato a explicar el clic medido en (895,87) cuando el resto fueron en (895,341).
+  static long pestCache=0;
+  static string pestCacheNombre="";
+
+  // El nodo de la pestana: del cache si sigue siendo el que se pidio, y del arbol si no. Un
+  // handle JAB se queda viejo si Azul reconstruye la vista, asi que no se confia en el a ciegas:
+  // se le relee el papel y el nombre, y solo se reusa si los dos siguen cuadrando.
+  static long PestanaNodo(string nombre){
+    if(pestCache!=0 && pestCacheNombre==nombre){
+      ACI2 ci;
+      if(Inf(pestCache,out ci) && ci.role_en_US=="page tab" && ci.name!=null && ci.name.Trim()==nombre) return pestCache;
+      pestCache=0; pestCacheNombre="";
+    }
     long t=First(root,(i,ac)=> i.role_en_US=="page tab" && i.name!=null && i.name.Trim()==nombre);
+    if(t!=0){ pestCache=t; pestCacheNombre=nombre; }
+    return t;
+  }
+  public static string GeoPestana(string nombre){
+    long t=PestanaNodo(nombre);
     if(t==0) return "ERROR: no encuentro la pestana '"+nombre+"'";
     ACI2 ti; if(!Inf(t,out ti)) return "ERROR: no puedo leer la geometria de la pestana '"+nombre+"'";
     if(ti.width<=0||ti.height<=0) return "ERROR: la pestana '"+nombre+"' no tiene tamano utilizable";
     return "OK|"+ti.x+","+ti.y+","+ti.width+","+ti.height;
   }
   public static bool PestanaSeleccionada(string nombre){
-    long t=First(root,(i,ac)=> i.role_en_US=="page tab" && i.name!=null && i.name.Trim()==nombre);
+    long t=PestanaNodo(nombre);
     if(t==0) return false;
     ACI2 ti; if(!Inf(t,out ti)) return false;
     return Est(ti,"selected");
@@ -1044,7 +1078,16 @@ if ($cargado) {
     # equivocado sin que nada lo delate hasta que ya esta escrito en el documento.
     if ($razon -ne "") {
       $texto = ([Busca]::FilaTexto(0)).ToUpper()
-      $clave = (($razon -split '\s+') | Where-Object { $_.Length -ge 4 } | Select-Object -First 1)
+      # A la palabra que sirve de clave se le quitan los signos de los extremos. Sin esto, una
+      # razon social como "EJEMPLO, ASESORIA E INTEGRADORES" deja la clave en
+      # 'EJEMPLO,' con la coma pegada, y Azul escribe la misma empresa sin coma: la guarda
+      # rechazaba a un cliente correcto. Se recortan solo los extremos, no el interior, para no
+      # romper palabras que llevan guion dentro.
+      $signos = [char[]]@(',', '.', ';', ':', '"', "'", '(', ')', '[', ']', '-', '/')
+      $clave = (($razon -split '\s+') |
+        ForEach-Object { $_.Trim($signos) } |
+        Where-Object { $_.Length -ge 4 } |
+        Select-Object -First 1)
       if ($clave -and ($texto -notlike "*$($clave.ToUpper())*")) {
         "ERROR: la primera fila no menciona '$clave', que es la razon social de la lista."
         "  fila: $($texto.Trim())"
@@ -1098,7 +1141,7 @@ if (-not $cargado) {
 }
 
 # ---- TOPE DE TRAMO (Etapa 5.4, 08/09/2026) ----------------------------------
-# Reloj de pared de 10 s que envuelve TODO este tramo: desde que la busqueda confirma una
+# Reloj de pared que envuelve TODO este tramo: desde que la busqueda confirma una
 # sola cuenta (aqui arriba, $cargado ya en true) hasta que la tabla de Suscripciones esta
 # lista para leer. Capa NUEVA por fuera: no reemplaza ni recorta Init() (5 s) ni el margen
 # de CommitCF -- esos ya vencieron mucho antes de llegar aqui y siguen intactos; son los que
@@ -1107,11 +1150,21 @@ if (-not $cargado) {
 # llamada JAB que ya este en curso, la misma limitacion que ya tienen todos los demas topes
 # de este archivo (docs/trampas.md, trampa 5: ninguna espera fija sirve, y ninguna espera,
 # fija o no, puede interrumpir una llamada bloqueada a medias).
-# Si se pasa de 10 s: NO se asume que la tabla esta lista. Se para, no se lee nada, se deja
+# Si se pasa del tope: NO se asume que la tabla esta lista. Se para, no se lee nada, se deja
 # para revisar a mano -- mismo idioma que cualquier otra guarda de este archivo (ERROR +
 # captura + exit 1). $topeTramo tiene que quedar asignado ANTES de que se llame a cualquiera
 # de las dos funciones de abajo.
-$topeTramo = (Get-Date).AddSeconds(10)
+#
+# 20 s y no 10 (Dorian, 11/09/2026). Los 10 se pusieron cuando se creia que lo que se estaba
+# atajando era Azul tardando en contestar. MEDIDO el 11/09 sobre un cliente que salio BIEN,
+# a mano quieta y con el cache de pestana ya puesto: este tramo gasto 40.604 llamadas JAB y
+# 9 segundos. Es decir que el tope viejo dejaba UN segundo de margen a un cliente sano, y de
+# ahi salian los tres abortos del historial. El gasto no es Azul contestando: es el puente
+# recorriendo el arbol entero, y lo sigue haciendo el bucle de abajo en CADA vuelta.
+# El numero esta en una sola variable a proposito: antes los mensajes repetian "10 s" en seis
+# sitios y cambiar el tope los dejaba mintiendo.
+$TRAMO_SEG = 20
+$topeTramo = (Get-Date).AddSeconds($TRAMO_SEG)
 function Test-TramoVencido { (Get-Date) -ge $topeTramo }
 function Get-TramoRestanteSeg { [Math]::Max(0, [int][Math]::Ceiling(($topeTramo - (Get-Date)).TotalSeconds)) }
 
@@ -1123,14 +1176,14 @@ if ([Busca]::PestanaSeleccionada('Suscripciones')) {
   if ($c -like 'ERROR*') { $c; exit 1 }
   "Pestana 'Suscripciones' pulsada con clic real en $(($c -split '\|')[1])."
   # La confirmacion la da Azul: la pestana pasa al estado 'selected'. Se pide como maximo lo
-  # que quede del tope de tramo de 10 s (Get-TramoRestanteSeg), nunca mas -- por eso ya no se
+  # que quede del tope de tramo (Get-TramoRestanteSeg), nunca mas -- por eso ya no se
   # pide un "40" fijo aqui: ese tope propio de EsperarPestana() sigue existiendo tal cual en
-  # su codigo, pero en este punto del archivo el tramo de 10 s es siempre el mas corto de
+  # su codigo, pero en este punto del archivo el tramo es siempre el mas corto de
   # los dos, asi que es el que manda.
   if (-not [Busca]::EsperarPestana('Suscripciones', (Get-TramoRestanteSeg))) {
-    "ERROR: la pestana 'Suscripciones' no quedo seleccionada dentro del tope de tramo de 10 s."
+    "ERROR: la pestana 'Suscripciones' no quedo seleccionada dentro del tope de tramo de $TRAMO_SEG s."
     "Captura: $(Save-Prueba -Etiqueta 'pestana_sin_efecto')"
-    [Busca]::Nota("tramo busqueda->Suscripciones: EXCEDIDO tope de 10 s (pestana)")
+    [Busca]::Nota("tramo busqueda->Suscripciones: EXCEDIDO tope de $TRAMO_SEG s (pestana)")
     exit 1
   }
 }
@@ -1140,8 +1193,11 @@ if ([Busca]::PestanaSeleccionada('Suscripciones')) {
 $resumen = ""; $previo = -1; $estables = 0
 for ($w = 0; $w -lt 60; $w++) {
   # Primera linea del cuerpo: el tope de tramo tambien corta este bucle, no solo el de 60
-  # vueltas que ya habia. 60 vueltas de 400 ms son 24 s, muy por encima de los 10 s del
-  # tramo, asi que en la practica este 'break' es el que va a salir primero cuando haga falta.
+  # vueltas que ya habia. 60 vueltas de 400 ms son 24 s mas lo que cueste cada llamada, asi
+  # que con el tramo en 20 s este 'break' sigue siendo el que sale primero cuando haga falta.
+  # OJO: ResumenSuscripciones() recorre el arbol entero en CADA vuelta y sin cache, asi que
+  # este bucle no es de espera barata -- es, junto con la busqueda de la pestana, lo que se
+  # come el tramo. Es el siguiente candidato a arreglar, igual que se arreglo la pestana.
   if (Test-TramoVencido) { break }
   $resumen = [Busca]::ResumenSuscripciones(8)
   if ($resumen -ne "" -and ($resumen -match 'Suscripciones: (\d+) filas')) {
@@ -1157,10 +1213,10 @@ for ($w = 0; $w -lt 60; $w++) {
 # cache) se descartaria igual -- justo el caso de cliente lento-pero-real que mas importa
 # dejar pasar. Con esta condicion, una estabilizacion de verdad siempre gana.
 if ($estables -lt 3 -and (Test-TramoVencido)) {
-  "ERROR: el tramo busqueda->Suscripciones paso de 10 s. No se da por lista la tabla:"
+  "ERROR: el tramo busqueda->Suscripciones paso de $TRAMO_SEG s. No se da por lista la tabla:"
   "       se marca para revisar a mano en vez de adivinar."
-  "Captura: $(Save-Prueba -Etiqueta 'tramo_10s_tabla')"
-  [Busca]::Nota("tramo busqueda->Suscripciones: EXCEDIDO tope de 10 s (tabla)")
+  "Captura: $(Save-Prueba -Etiqueta 'tramo_tabla')"
+  [Busca]::Nota("tramo busqueda->Suscripciones: EXCEDIDO tope de $TRAMO_SEG s (tabla)")
   exit 1
 }
 

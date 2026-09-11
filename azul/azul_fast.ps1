@@ -27,7 +27,12 @@ param(
   # caia 9 px FUERA, sobre gris. Por eso la foto se perdia con los clientes de nombre corto.
   # 500 cae dentro del primer caracter del nombre sea cual sea su largo.
   [int]$ClienteX = 500,
-  [int]$ClienteY = 120
+  [int]$ClienteY = 120,
+  # AVERIGUACION: volcar al progreso todos los campos del detalle de la PRIMERA linea leida,
+  # no solo los cinco que el lector usa. Sirve para ver que mas trae Azul en esa tabla sin
+  # adivinar -- por ejemplo si el nombre comercial del telefono esta en algun campo. No cambia
+  # nada de lo que se lee ni de lo que se escribe.
+  [switch]$VolcarCampos
 )
 $ErrorActionPreference='Stop'
 # NOTA: este archivo debe permanecer en ASCII puro.
@@ -104,6 +109,14 @@ public static class Azul {
   // esperas que ya habia en el bucle de lectura; no sustituyen ninguna.
   public static int PAUSA_LINEAS=4000;
   public static int PAUSA_LECTURA=7000;
+  // Volcado de los campos del detalle de la PRIMERA linea que se lea. Es una herramienta de
+  // averiguacion, no de produccion: el lector se queda con cinco campos de esa tabla (Plan
+  // Movil, MPE, Fecha Final, Duracion, Marca y Modelo) y los demas ni se nombran. Cuando hace
+  // falta saber QUE MAS trae Azul ahi -- por ejemplo si el nombre comercial del telefono esta
+  // en algun campo, y no solo el codigo del fabricante que da "Modelo" -- esto lo ensena sin
+  // tener que adivinar. Solo imprime al progreso; no cambia ni una decision de lectura.
+  public static bool VOLCAR=false;
+  static bool volcado=false;
   static void P(string s){
     try{ System.IO.File.AppendAllText(PROG, DateTime.Now.ToString("HH:mm:ss")+"  "+s+"\r\n"); }catch{}
   }
@@ -278,6 +291,158 @@ public static class Azul {
     }
     return MarcoCuenta().Length==0;
   }
+
+  // El marco del panel del cliente MIENTRAS CARGA. Azul lo abre llamandose "Formulario" y solo
+  // al terminar lo renombra a "Cuenta: <nombre>"; como el resto de los marcos, numera las
+  // instancias ("Formulario [2]"), asi que se compara por prefijo y no por igualdad.
+  const string FORM_PREFIX = "Formulario";
+  static long MarcoFormularioPanes(){
+    for(int p=0;p<panes.Count;p++){
+      ACI pi; if(!Inf(panes[p],out pi)) continue;
+      int kc=pi.childrenCount;
+      for(int k=0;k<kc;k++){
+        long c=Kid(panes[p],k); if(c==0) continue;
+        ACI ci; if(!Inf(c,out ci)) continue;
+        if(ci.role_en_US=="internal frame" && ci.name!=null && ci.name.StartsWith(FORM_PREFIX)) return c;
+      }
+    }
+    return 0;
+  }
+
+  // Un marco interno por el prefijo de su titulo, solo por las zonas cacheadas. Generico
+  // porque ya van tres prefijos: "Cuenta: ", "Formulario" y "Contacto: ".
+  static long MarcoPorPrefijo(string pref){
+    for(int p=0;p<panes.Count;p++){
+      ACI pi; if(!Inf(panes[p],out pi)) continue;
+      int kc=pi.childrenCount;
+      for(int k=0;k<kc;k++){
+        long c=Kid(panes[p],k); if(c==0) continue;
+        ACI ci; if(!Inf(c,out ci)) continue;
+        if(ci.role_en_US=="internal frame" && ci.name!=null && ci.name.StartsWith(pref)) return c;
+      }
+    }
+    return 0;
+  }
+
+  // La ficha de Contacto.
+  //
+  // MEDIDO el 11/09/2026 con la prueba que deja el fallo: cuando la banda "Cuenta:" de arriba
+  // viene VACIA, pulsar el enlace del cliente NO abre la vista general de la cuenta, abre esta
+  // ficha, titulada "Contacto: <nombre>". El sistema solo conocia "Cuenta: ", asi que se
+  // quedaba los 50 s esperando un panel que tenia abierto delante. Y como el cierre tambien
+  // buscaba solo "Cuenta: ", la ficha quedaba abierta para siempre: en el segundo cliente ya
+  // habia dos, y el tercero fallo distinto porque la suya ya estaba abierta y el clic no abrio
+  // nada nuevo.
+  //
+  // No es la vista que quiere la base -- trae datos de contacto, no el resumen de la cuenta --
+  // asi que no se fotografia: se reconoce, se cierra y el bloque se queda con su hueco.
+  const string CONT_PREFIX = "Contacto:";
+  public static string MarcoContacto(){
+    long f=MarcoPorPrefijo(CONT_PREFIX); if(f==0) return "";
+    ACI i; if(!Inf(f,out i)) return "";
+    return i.name==null?"":i.name;
+  }
+  public static string GeoMarcoContacto(){
+    long f=MarcoPorPrefijo(CONT_PREFIX); if(f==0) return "";
+    ACI i; if(!Inf(f,out i)) return "";
+    return i.x+","+i.y+","+i.width+","+i.height;
+  }
+  public static bool EsperarSinMarcoContacto(int seg){
+    DateTime tope=DateTime.Now.AddSeconds(seg);
+    while(DateTime.Now<tope){
+      if(MarcoPorPrefijo(CONT_PREFIX)==0) return true;
+      Pump(400);
+    }
+    return MarcoPorPrefijo(CONT_PREFIX)==0;
+  }
+
+  // El panel del cliente, esperado en DOS FASES en vez de un solo reloj de 40 s.
+  //
+  // El 11/09/2026 la foto fallo 3 veces de 8 con "el panel no abrio en 40 s", y Dorian confirmo
+  // que el panel SI se estaba cargando. El reloj unico no distinguia las dos causas y trataba
+  // igual a la peor y a la mejor: al clic que no dio en el enlace le regalaba 40 s de espera
+  // inutil, y al panel que estaba cargando de verdad le cortaba a los 40 s.
+  //
+  // Fase corta: que APAREZCA un marco, ya sea "Formulario" (cargando) o directamente
+  // "Cuenta: ". Que aparezca es la prueba de que el clic dio en el enlace. Si no aparece
+  // ninguno, el clic no dio, y se dice asi para que quien llama reintente el clic en vez de
+  // esperar de brazos cruzados.
+  //
+  // Fase larga: con el marco ya abierto y cargando, esperar a que el titulo pase al nombre del
+  // cliente. Aqui se puede esperar mas que antes SIN riesgo de premiar un fallo, porque ya se
+  // sabe que hay algo cargandose de verdad.
+  //
+  // Devuelve el titulo, o "SINMARCO" / "CARGANDO" segun en que fase se quedo. Ningun titulo de
+  // verdad puede confundirse con esos dos: todos empiezan por "Cuenta: ".
+  // Devuelve el titulo si abrio la vista de cuenta, o uno de estos tres: "CONTACTO" si lo que
+  // abrio fue la ficha de contacto, "SINMARCO" si no abrio nada, "CARGANDO" si abrio y no
+  // termino. Ningun titulo de verdad puede confundirse con ellos: todos empiezan por "Cuenta: ".
+  // CORREGIDO el 11/09/2026 con lo que Dorian vio en pantalla: la ficha de Contacto NO es el
+  // final del camino, es el panel a medio cargar. La version anterior salia en el instante en
+  // que la veia, asi que el sistema empezaba a cerrar todo mientras Azul todavia estaba trayendo
+  // la informacion del cliente, y la foto no se tomaba nunca. Dos cosas lo respaldan: que el
+  // titulo de esa ficha traia el nombre de la EMPRESA en dos de los seis casos, no el de una
+  // persona, y que quien mira la pantalla vio la carga en curso.
+  //
+  // Ahora, ver una ficha de Contacto abre un plazo propio (segContacto) durante el que se sigue
+  // esperando la vista de cuenta. Ese plazo es corto a proposito: si se usara el largo entero,
+  // cada cliente que de verdad se quede en la ficha de Contacto costaria casi un minuto de
+  // espera inutil.
+  public static string EsperarPanelCliente(int segCorto,int segLargo,int segContacto){
+    // Fase corta: que aparezca ALGO. Los tres titulos posibles valen igual como prueba de que
+    // el clic dio en el enlace; distinguirlos es asunto de la fase larga.
+    DateTime t1=DateTime.Now.AddSeconds(segCorto);
+    bool abierto=false;
+    while(true){
+      string n=MarcoCuenta(); if(n.Length>0) return n;
+      if(MarcoPorPrefijo(CONT_PREFIX)!=0 || MarcoFormularioPanes()!=0){ abierto=true; break; }
+      if(DateTime.Now>=t1) break;
+      Pump(300);
+    }
+    if(!abierto) return "SINMARCO";
+
+    P("captura: el panel abrio y sigue cargando; se espera al nombre del cliente hasta "+segLargo+" s");
+    DateTime t2=DateTime.Now.AddSeconds(segLargo);
+    DateTime topeCont=DateTime.MaxValue;
+    while(DateTime.Now<t2){
+      string n=MarcoCuenta(); if(n.Length>0) return n;
+      if(MarcoPorPrefijo(CONT_PREFIX)!=0){
+        if(topeCont==DateTime.MaxValue){
+          topeCont=DateTime.Now.AddSeconds(segContacto);
+          P("captura: hay una ficha de Contacto abierta; se le dan "+segContacto+" s mas por si la vista de cuenta todavia esta cargando");
+        }
+        if(DateTime.Now>=topeCont) return "CONTACTO";
+      }
+      Pump(400);
+    }
+    return "CARGANDO";
+  }
+
+  // Que marcos internos hay ABIERTOS ahora mismo, por su titulo. Solo para diagnostico.
+  //
+  // Existe por una pregunta que el 11/09/2026 no se podia contestar: la foto del cliente fallo
+  // tres veces de ocho con "el panel no abrio en 40 s", y con lo que se anotaba no habia forma
+  // de distinguir las dos causas posibles -- que el clic no diera en el enlace y no se abriera
+  // nada, o que el panel SI abriera y Azul no lo terminara de cargar. El segundo caso se ve
+  // como un formulario en blanco cuyo titulo sigue siendo "Formulario", y EsperarMarcoCuenta()
+  // espera el prefijo "Cuenta: ", asi que no lo reconoce y se agota igual.
+  //
+  // Mismo coste que MarcoCuentaPanes(): solo las zonas cacheadas, sin recorrer el arbol.
+  public static string MarcosAhora(){
+    var sb=new StringBuilder();
+    for(int p=0;p<panes.Count;p++){
+      ACI pi; if(!Inf(panes[p],out pi)) continue;
+      int kc=pi.childrenCount;
+      for(int k=0;k<kc;k++){
+        long c=Kid(panes[p],k); if(c==0) continue;
+        ACI ci; if(!Inf(c,out ci)) continue;
+        if(ci.role_en_US!="internal frame") continue;
+        if(sb.Length>0) sb.Append(" | ");
+        sb.Append(ci.name==null?"(sin nombre)":ci.name.Trim());
+      }
+    }
+    return sb.Length==0?"(ninguno)":sb.ToString();
+  }
   // ---- marco de interaccion ----
   // REGLAS.md Ciclo 3, 09/09/2026. Mismo mecanismo que el panel del cliente: el puente ve
   // el marco y su geometria, pero no los botones de su barra de titulo, asi que la X se
@@ -315,6 +480,91 @@ public static class Azul {
     }
     return MarcoInteraccion().Length==0;
   }
+  // ---- el aviso que Azul levanta al cerrar una subventana ----
+  // REGLAS.md seccion 4.1, 11/09/2026. 'Descartar' es la unica excepcion a la lista de botones
+  // prohibidos, y lo es bajo condiciones muy estrechas. Dos de ellas las garantiza quien llama,
+  // no este codigo: solo se invoca desde el cierre de un marco que nuestra propia navegacion
+  // abrio, y solo cuando ese marco NO se fue con la X. Las otras tres las garantiza esto:
+  // se exige que el boton viva dentro de un cuadro de aviso de verdad, se deja por escrito lo
+  // que decia ese aviso ANTES de pulsar, y no se pulsa nada cuyo nombre no sea exactamente
+  // 'Descartar'.
+  //
+  // Que lo descartado sea el borrador de interaccion y no un dato del cliente no se deduce del
+  // arbol: se sostiene en que el sistema es de solo lectura y nunca escribe en ningun campo, de
+  // modo que el unico cambio pendiente que puede existir es el que creo la propia navegacion.
+  const string BTN_DESC = "Descartar";
+
+  // Roles que SI son un cuadro de aviso. Deliberadamente no incluye "internal frame": si el
+  // boton apareciera dentro del marco del cliente en vez de dentro de un aviso, esto se niega a
+  // pulsar y lo reporta, que es lo que corresponde cuando no se entiende lo que hay en pantalla.
+  static bool EsAviso(string r){
+    if(r==null) return false;
+    return r=="dialog" || r=="alert" || r=="option pane" || r=="file chooser";
+  }
+
+  // Busca el boton y, de paso, el cuadro de aviso mas cercano que lo contiene y los roles del
+  // camino. Los roles se devuelven para que una corrida que NO encuentre el cuadro deje dicho
+  // que habia en su lugar: es la unica forma de aprender la forma real de este aviso sin
+  // instrumentar Azul. No se entra en las tablas, que es donde vive casi todo el costo del
+  // arbol y donde con seguridad no hay botones de aviso.
+  static long BuscaDescartar(long ac,long avisoArriba,string caminoArriba,int prof,out long aviso,out string camino){
+    aviso=0; camino="";
+    if(prof>40) return 0;
+    ACI i; if(!Inf(ac,out i)) return 0;
+    string rol=(i.role_en_US==null?"?":i.role_en_US);
+    string cam=(caminoArriba.Length==0?rol:(caminoArriba+" > "+rol));
+    long av=avisoArriba;
+    if(EsAviso(rol)) av=ac;
+    if(rol=="push button" && i.name!=null && i.name.Trim()==BTN_DESC){ aviso=av; camino=cam; return ac; }
+    if(rol=="table") return 0;
+    int kc=i.childrenCount;
+    for(int k=0;k<kc;k++){
+      long c=Kid(ac,k); if(c==0) continue;
+      long a2; string c2;
+      long r=BuscaDescartar(c,av,cam,prof+1,out a2,out c2);
+      if(r!=0){ aviso=a2; camino=c2; return r; }
+    }
+    return 0;
+  }
+
+  // Junta el texto legible de un nodo y su descendencia. Es para la constancia escrita del
+  // aviso, asi que poco y corto: un cuadro de aviso tiene un mensaje y dos o tres botones.
+  static string TextoAviso(long ac,int prof){
+    if(prof>6) return "";
+    ACI i; if(!Inf(ac,out i)) return "";
+    var sb=new StringBuilder();
+    if(i.name!=null && i.name.Trim().Length>0) sb.Append(i.name.Trim()+" / ");
+    string d=Strip(i.description);
+    if(d.Length>0) sb.Append(d+" / ");
+    int kc=i.childrenCount;
+    for(int k=0;k<kc;k++){ long c=Kid(ac,k); if(c==0) continue; sb.Append(TextoAviso(c,prof+1)); }
+    return sb.ToString();
+  }
+
+  // Lo que devuelve es un codigo para que PowerShell decida que escribir en pantalla:
+  //   SINAVISO      no hay ningun boton 'Descartar' en el arbol; lo que bloquea es otra cosa
+  //   SINCUADRO:..  hay boton pero no dentro de un cuadro de aviso; NO se pulsa, y se dice que habia
+  //   SINTEXTO      el cuadro esta pero no se le pudo leer nada; NO se pulsa, porque la regla
+  //                 exige dejar constancia de lo que decia antes de tocarlo
+  //   APAGADO       el boton esta ahi pero deshabilitado
+  //   PULSADO / NOPULSO
+  public static string PulsarDescartar(){
+    long aviso; string camino;
+    long b=BuscaDescartar(root,0,"",0,out aviso,out camino);
+    if(b==0) return "SINAVISO";
+    if(aviso==0){ P("aviso al cerrar: hay boton 'Descartar' pero no dentro de un cuadro de aviso. Camino: "+camino); return "SINCUADRO:"+camino; }
+    string txt=TextoAviso(aviso,0).Trim();
+    if(txt.Length>400) txt=txt.Substring(0,400);
+    if(txt.Length==0){ P("aviso al cerrar: cuadro encontrado pero sin texto legible. Camino: "+camino); return "SINTEXTO"; }
+    P("aviso al cerrar, texto completo: "+txt);
+    if(!Habilitado(b)) return "APAGADO";
+    bool ok=Click(b);
+    P("'Descartar' pulsado = "+ok);
+    if(!ok) return "NOPULSO";
+    Pump(700);
+    return "PULSADO";
+  }
+
   // Espera bombeando mensajes, no con Start-Sleep: el puente necesita que el hilo despache.
   public static void Espera(int ms){ Pump(ms); }
   // Deja que PowerShell escriba en progreso.txt por el mismo canal que el resto de la corrida.
@@ -558,6 +808,20 @@ public static class Azul {
             string[] nm=new string[maxR];
             for(int r=0;r<maxR;r++) nm[r]=Txt(at,r*AC);
 
+            // Volcado de averiguacion, solo de la primera linea: la tabla de atributos entera,
+            // campo por campo. Va aqui y no antes porque aqui ya se espero a que el arbol deje
+            // de crecer, asi que lo que se vuelca es la tabla completa y no una a medio cargar.
+            if(VOLCAR && !volcado){
+              volcado=true;
+              P("   ---- VOLCADO de campos del detalle: "+maxR+" filas x "+AC+" columnas ----");
+              for(int r=0;r<maxR;r++){
+                string v2=(AC>2)?Txt(at,r*AC+2):"";
+                string v3=(AC>3)?Txt(at,r*AC+3):"";
+                P("   ["+r+"]  "+nm[r]+"  |  "+v2+"  |  "+v3);
+              }
+              P("   ---- fin del volcado ----");
+            }
+
             // ---- unicidad: si hay ambiguedad NO se elige, se marca REVISAR ----
             int cPlan=0,cMPE=0,cFF=0,cMod=0,cDur=0;
             int rPlan=-1,rMPE=-1,rFF=-1,rDur=-1;
@@ -582,10 +846,38 @@ public static class Azul {
             int rComp=-1;
             for(int r=rPlan+1;r<Math.Min(rPlan+3,maxR);r++){ if(nm[r]==L_COMP){ rComp=r; break; } }
 
-            // dispositivo: Marca + Modelo, leidos tal cual
+            // dispositivo: Marca + Modelo, leidos tal cual. Es el respaldo, no el resultado:
+            // "MOTOROLA XT2421-7" es el codigo del fabricante y no dice nada a quien vende.
+            string marca="", modelo="";
             for(int r=0;r<maxR;r++){
-              if(nm[r].StartsWith(L_MAR)){ string v=Txt(at,r*AC+2); if(v!="N/A"&&v.Length>0&&disp.Length==0) disp=v; }
-              else if(nm[r]==L_MOD){ string v=Txt(at,r*AC+2); if(v!="N/A"&&v.Length>0) disp=(disp+" "+v).Trim(); }
+              if(nm[r].StartsWith(L_MAR)){ string v=Txt(at,r*AC+2); if(v!="N/A"&&v.Length>0&&marca.Length==0) marca=v; }
+              else if(nm[r]==L_MOD){ string v=Txt(at,r*AC+2); if(v!="N/A"&&v.Length>0) modelo=v; }
+            }
+            disp=(marca+" "+modelo).Trim();
+
+            // El modelo COMERCIAL, que es lo que Dorian pidio el 11/09/2026.
+            //
+            // MEDIDO ese dia volcando los 130 campos del detalle de una linea: el nombre de
+            // venta del equipo NO es el valor de ningun campo. Es el NOMBRE de la fila que
+            // agrupa al equipo -- "MOTOROLA MOTO G04S AZUL ATT" -- y de ella cuelgan "Marca
+            // (Fabricante)" = MOTOROLA y "Modelo" = XT2421-7. El lector venia leyendo las dos
+            // ramas y tirando el tronco, que es el unico que trae el nombre comercial.
+            //
+            // Esa fila se distingue de un campo en que sus DOS columnas de valor vienen vacias,
+            // y se reconoce por la marca que ya se leyo: empieza por ella. Atarlo a la marca y
+            // no a una fila fija es lo que lo hace sobrevivir a que Azul reordene la tabla, y
+            // la reordena: el numero de campos depende de lo que la linea tenga contratado.
+            //
+            // Si no aparece, disp se queda con Marca + Modelo. Un telefono sin nombre de venta
+            // en Azul -- o una linea que es solo SIM -- no es un error, es un dato que no esta.
+            if(marca.Length>0){
+              for(int r=0;r<maxR;r++){
+                if(!nm[r].StartsWith(marca)) continue;
+                if(nm[r].Length<=marca.Length) continue;   // la fila es la marca sola, no el nombre
+                if(Txt(at,r*AC+2).Length>0) continue;      // trae valor: es un campo, no el equipo
+                if(AC>3 && Txt(at,r*AC+3).Length>0) continue;
+                disp=nm[r].Trim(); break;
+              }
             }
             if(disp.Length==0) disp="N/A";
 
@@ -716,6 +1008,28 @@ public static class Azul {
 # Cierra el marco "Cuenta: ..." con la X de su barra de titulo. El puente no expone los
 # botones de la barra, pero si la geometria del marco, asi que la X se calcula a partir de
 # ella en vez de clavar un par de numeros que dejarian de servir si el marco se moviera.
+#
+# El aviso que Azul levanta a veces al cerrar una subventana. Hasta el 11/09/2026 lo despachaba
+# Dorian a mano: mientras no se pulsaba, la subventana no se iba, el cliente seguia cargado para
+# el siguiente y todos sus recorridos del arbol costaban hasta nueve veces mas.
+#
+# Se llama SOLO desde el cierre de un marco y SOLO cuando la X no lo cerro. Esas dos condiciones
+# son parte de la regla, no una optimizacion, pero tambien son lo que hace que esto no cueste
+# nada: en las corridas en las que Azul no pregunta, el marco se va con la X y aqui no se entra.
+# Cuando si se entra, se paga un recorrido del arbol, que es justo la situacion en la que no
+# pagarlo sale mucho mas caro.
+function Resolver-AvisoDescartar {
+  param([string]$Que = "una subventana")
+  $r = [Azul]::PulsarDescartar()
+  if ($r -eq 'PULSADO') {
+    Write-Host "Azul pidio confirmacion al cerrar $Que y se pulso 'Descartar'."
+    return $true
+  }
+  if ($r -eq 'SINAVISO') { return $false }
+  Write-Host "AVISO: al cerrar $Que hay un aviso que NO se pulso ($r). Queda para revisar a mano."
+  return $false
+}
+
 function Close-MarcoCuenta {
   param([Parameter(Mandatory=$true)][IntPtr]$Hwnd)
   $geo = [Azul]::GeoMarcoCuenta()
@@ -726,15 +1040,46 @@ function Close-MarcoCuenta {
   $cx = [int]$g[0] - $r.Left + [int]$g[2] - 21
   $cy = [int]$g[1] - $r.Top + 9
   [void](Invoke-AzulClick -Hwnd $Hwnd -X $cx -Y $cy)
-  $ok = [Azul]::EsperarSinMarcoCuenta(15)
+  # Mismo presupuesto de 15 s que antes, partido en dos: lo que tarda un cierre normal, y el
+  # resto para despues de despachar el aviso.
+  $ok = [Azul]::EsperarSinMarcoCuenta(4)
+  if (-not $ok) {
+    [void](Resolver-AvisoDescartar -Que "el panel del cliente")
+    $ok = [Azul]::EsperarSinMarcoCuenta(11)
+  }
   [Azul]::Nota("cierre del panel del cliente = $ok")
+  return $ok
+}
+
+# Cierra la ficha "Contacto: ..." con la X de su barra de titulo. Misma cuenta geometrica que
+# Close-MarcoCuenta. Hace falta desde el 11/09/2026: hasta entonces nada sabia cerrar esta
+# ficha y se quedaba abierta toda la corrida, tapando la tabla y encareciendo cada recorrido
+# del arbol del cliente siguiente.
+function Close-MarcoContacto {
+  param([Parameter(Mandatory=$true)][IntPtr]$Hwnd)
+  $geo = [Azul]::GeoMarcoContacto()
+  if ($geo -eq "") { return $true }
+  $g = $geo.Split(',')
+  $r = Get-AzulRect -Hwnd $Hwnd
+  $cx = [int]$g[0] - $r.Left + [int]$g[2] - 21
+  $cy = [int]$g[1] - $r.Top + 9
+  [void](Invoke-AzulClick -Hwnd $Hwnd -X $cx -Y $cy)
+  $ok = [Azul]::EsperarSinMarcoContacto(4)
+  if (-not $ok) {
+    [void](Resolver-AvisoDescartar -Que "la ficha de Contacto")
+    $ok = [Azul]::EsperarSinMarcoContacto(11)
+  }
+  [Azul]::Nota("cierre de la ficha de Contacto = $ok")
   return $ok
 }
 
 # Cierra el marco "Inicio de Interaccion ..." con la X de su barra de titulo. Misma cuenta
 # geometrica que Close-MarcoCuenta, apuntando al marco de interaccion en vez de al del
-# cliente. REGLAS.md Ciclo 3, 09/09/2026: confirmado que cerrarlo sin haber escrito nada en
-# sus campos (Razon 1/2, Resultado) no pide guardar ni muestra ningun aviso.
+# cliente.
+#
+# La nota del Ciclo 3 del 09/09/2026 decia que cerrarlo sin haber escrito nada en sus campos
+# (Razon 1/2, Resultado) no pide guardar ni muestra ningun aviso. Eso quedo desmentido el
+# 11/09/2026: Dorian viene despachando a mano un aviso que si aparece. De ahi el paso nuevo.
 function Close-MarcoInteraccion {
   param([Parameter(Mandatory=$true)][IntPtr]$Hwnd)
   $geo = [Azul]::GeoMarcoInteraccion()
@@ -744,7 +1089,11 @@ function Close-MarcoInteraccion {
   $cx = [int]$g[0] - $r.Left + [int]$g[2] - 21
   $cy = [int]$g[1] - $r.Top + 9
   [void](Invoke-AzulClick -Hwnd $Hwnd -X $cx -Y $cy)
-  $ok = [Azul]::EsperarSinMarcoInteraccion(15)
+  $ok = [Azul]::EsperarSinMarcoInteraccion(4)
+  if (-not $ok) {
+    [void](Resolver-AvisoDescartar -Que "'Inicio de Interaccion'")
+    $ok = [Azul]::EsperarSinMarcoInteraccion(11)
+  }
   [Azul]::Nota("cierre del marco de interaccion = $ok")
   return $ok
 }
@@ -799,18 +1148,66 @@ function Get-VistaCliente {
       [Azul]::Nota("captura: habia un panel de cliente abierto de antes, se cierra")
       [void](Close-MarcoCuenta -Hwnd $Hwnd)
     }
+    # Lo mismo con la ficha de Contacto. Sin esto, la ficha del cliente ANTERIOR sigue abierta y
+    # el clic de este no abre nada nuevo: medido el 11/09/2026, asi fallo el tercer cliente de
+    # tres, y el sintoma enganaba porque parecia que el clic no habia dado en el enlace.
+    if ([Azul]::MarcoContacto().Length -gt 0) {
+      [Azul]::Nota("captura: habia una ficha de Contacto abierta de antes, se cierra")
+      [void](Close-MarcoContacto -Hwnd $Hwnd)
+    }
     [Azul]::Nota("captura: clic en el enlace Cliente en ($X,$Y)")
     [void](Invoke-AzulClick -Hwnd $Hwnd -X $X -Y $Y)
     try {
       # Se espera al TITULO, no al reloj: mientras carga, el marco se llama "Formulario" y
       # se ve como un formulario en blanco con boton "Crear". Una espera fija de 3 s
       # fotografiaba justo eso, y parece una imagen valida.
-      $titulo = [Azul]::EsperarMarcoCuenta(40)
-      if ($titulo -eq "") {
-        throw "el panel del cliente no abrio en 40 s (el clic no dio en el enlace, o Azul no respondio)"
+      # 10 s para que el panel APAREZCA, 60 para que termine de cargar, y 15 mas de cortesia
+      # desde que se ve una ficha de Contacto. En el caso bueno no cambia nada: las tres fases
+      # salen en cuanto se cumple su condicion. Los numeros subieron el 11/09/2026 porque el
+      # sistema iba a cerrar el panel mientras Azul aun cargaba.
+      $titulo = [Azul]::EsperarPanelCliente(10, 60, 15)
+
+      if ($titulo -eq 'SINMARCO') {
+        # No se abrio NINGUN marco: el clic no dio en el enlace. Reintentar es seguro justo por
+        # eso -- no hay nada abierto que un segundo clic pueda duplicar -- y es lo que antes no
+        # se hacia nunca, porque el reloj unico no sabia distinguir este caso.
+        [Azul]::Nota("captura: no aparecio ningun panel; el clic no dio en el enlace. Un reintento.")
+        [void](Invoke-AzulClick -Hwnd $Hwnd -X $X -Y $Y)
+        $titulo = [Azul]::EsperarPanelCliente(10, 60, 15)
       }
-      $res.Cliente = $titulo.Substring(8).Trim()
-      [Azul]::Nota("captura: panel abierto - $titulo")
+
+      if ($titulo -eq 'SINMARCO' -or $titulo -eq 'CARGANDO') {
+        # PRUEBAS DEL FALLO (11/09/2026). Este fallo no dejaba nada detras, y por eso llevaba
+        # dias sin diagnosticar. La lista de marcos dice cual de las dos causas fue, y la foto
+        # ensena que habia en pantalla.
+        #
+        # Va en su propio try: un diagnostico que rompa la corrida seria peor que no tenerlo.
+        $porque = if ($titulo -eq 'SINMARCO') { "no se abrio ningun panel ni al reintentar: el clic no da en el enlace" }
+                  else { "el panel abrio pero Azul no lo termino de cargar en 50 s" }
+        try {
+          [Azul]::Nota("captura: marcos abiertos al fallar = " + [Azul]::MarcosAhora())
+          $dirP = Join-Path $PSScriptRoot 'salidas\busquedas'
+          if (-not (Test-Path -LiteralPath $dirP)) { [void](New-Item -ItemType Directory -Path $dirP -Force) }
+          $pru = Join-Path $dirP ("panel_no_abrio_" + (Get-Date -Format 'yyyyMMdd_HHmmss') + ".png")
+          [void](Save-AzulShot -Hwnd $Hwnd -Ruta $pru)
+          [Azul]::Nota("captura: prueba del fallo guardada en $pru")
+        } catch {
+          [Azul]::Nota("captura: no se pudo dejar prueba del fallo - " + $_.Exception.Message)
+        }
+        throw "no se pudo abrir el panel del cliente: $porque"
+      }
+      if ($titulo -eq 'CONTACTO') {
+        # Se espero y lo que Azul dejo abierto es la ficha de Contacto. Se fotografia esa: en
+        # pantalla esta la informacion del cliente, y una foto vale mas que un hueco. Queda
+        # escrito de cual ficha es, para que la imagen del documento se pueda rastrear.
+        $quien = ([Azul]::MarcoContacto()) -replace '^Contacto:\s*', ''
+        $res.Cliente = $quien.Trim()
+        [Azul]::Nota("captura: la vista que quedo abierta es la ficha de Contacto ($quien). Se fotografia esa.")
+        Write-Host "       Azul dejo la ficha de Contacto para este cliente; la foto es de esa ficha."
+      } else {
+        $res.Cliente = $titulo.Substring(8).Trim()
+        [Azul]::Nota("captura: panel abierto - $titulo")
+      }
 
       # El titulo cambia antes de que terminen de pintarse los campos: se espera ademas a
       # que la ventana deje de cambiar.
@@ -832,8 +1229,11 @@ function Get-VistaCliente {
       [Azul]::Nota("captura: guardada en $destino")
     } finally {
       # Se cierra pase lo que pase: dejar el panel abierto rompe la siguiente corrida,
-      # porque tapa la tabla de Suscripciones.
+      # porque tapa la tabla de Suscripciones. Las dos clases de panel, no solo la de cuenta:
+      # la ficha de Contacto estuvo quedandose abierta hasta el 11/09/2026 justo por faltar
+      # esta linea, y cada una que se acumulaba encarecia todos los recorridos siguientes.
       [void](Close-MarcoCuenta -Hwnd $Hwnd)
+      [void](Close-MarcoContacto -Hwnd $Hwnd)
     }
   } catch {
     [Azul]::Nota("captura: fallo - " + $_.Exception.Message)
@@ -848,6 +1248,7 @@ try { $hwnd = Get-AzulHwnd } catch { "ERROR: $($_.Exception.Message)"; exit 1 }
 [Azul]::PROG = Join-Path $PSScriptRoot 'progreso.txt'
 [Azul]::PAUSA_LINEAS  = $PausaLineas  * 1000
 [Azul]::PAUSA_LECTURA = $PausaLectura * 1000
+[Azul]::VOLCAR        = [bool]$VolcarCampos
 
 # Init() aqui y no dentro de Run() porque cerrar el panel exige un clic real, y eso vive en
 # PowerShell. Run() vuelve a llamar a Init(), que es idempotente: cuesta un recacheo de panes.
