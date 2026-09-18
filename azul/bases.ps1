@@ -37,13 +37,24 @@
 # NOTA: mantener este archivo en ASCII puro, igual que el resto de los .ps1 del proyecto.
 # PowerShell 5.1 lee los .ps1 sin BOM como ANSI y rompe los acentos en silencio.
 
-# El primer numero que se va a repartir. Lo eligio Dorian el 09/09/2026: la serie del
-# escritorio tiene un hueco en el 034 y ahi quiere que empiece la carpeta nueva. Solo se usa
-# cuando TODAVIA NO HAY REGISTRO; en cuanto lo hay, manda el registro.
-$BASES_PRIMER_NUMERO = 34
-# El nombre queda "BASE 034 PS1 VIRLAN.docx". El sufijo se guarda dentro del registro, asi que
-# cambiarlo aqui solo afecta a una carpeta que todavia no tenga registro.
-$BASES_SUFIJO        = 'PS1 VIRLAN'
+# LAS SERIES, cada una con el primer numero que reparte. Cada serie lleva su PROPIO contador y
+# su propio registro: numerar en una no mueve a la otra. El nombre queda "BASE 034 PS1 VIRLAN.docx"
+# o "BASE 071 PS2 VIRLAN.docx".
+#
+#   PS1  la de siempre. Empieza en el 034 porque lo eligio Dorian el 09/09/2026: la serie del
+#        escritorio tenia un hueco ahi.
+#   PS2  la abrio Dorian el 18/09/2026, empezando en el 071, pidiendo expresamente que la PS1
+#        siguiera donde iba (050).
+#
+# El primer numero solo se usa cuando esa serie TODAVIA NO TIENE REGISTRO; en cuanto lo tiene,
+# manda el registro. Abrir otra serie es anadir una linea aqui.
+$BASES_SERIES = @{
+  'PS1' = 34
+  'PS2' = 71
+}
+# La que se usa si no se dice ninguna. Es la unica que existia antes del 18/09/2026, y su
+# registro conserva el nombre de entonces para no tener que mover nada.
+$BASES_SERIE_POR_DEFECTO = 'PS1'
 # Una base son 10 clientes (ARRANQUE.md). Con bloques cortos, una base cruza varias corridas.
 $BASES_POR_BASE      = 10
 $BASES_ARCHIVO       = 'registro_bases.json'
@@ -59,27 +70,60 @@ function Get-CarpetaBases {
   return (Join-Path $PSScriptRoot 'bases')
 }
 
+# La serie, escrita siempre igual ("ps2 " -> "PS2"). Vacio = la de por defecto. Una serie que no
+# esta en la tabla ABORTA: inventarse un contador nuevo por una errata abriria una BASE 034 que
+# nadie pidio, y pasaria en silencio.
+function Get-SerieBases {
+  param([string]$Serie = "")
+  if ([string]::IsNullOrWhiteSpace($Serie)) { return $BASES_SERIE_POR_DEFECTO }
+  $s = $Serie.Trim().ToUpper()
+  if (-not $BASES_SERIES.ContainsKey($s)) {
+    throw ("No conozco la serie '$Serie'. Las que hay: $((@($BASES_SERIES.Keys) | Sort-Object) -join ', ').`n" +
+           "       Una serie nueva se abre anadiendola a la tabla del principio de bases.ps1.")
+  }
+  return $s
+}
+
+function Get-SufijoSerie {
+  param([string]$Serie = "")
+  return ("{0} VIRLAN" -f (Get-SerieBases $Serie))
+}
+
+# Cada serie tiene su archivo. La de por defecto conserva el nombre de siempre: su memoria es
+# la que ya estaba escrita y no se mueve.
 function Get-RutaRegistro {
-  param([Parameter(Mandatory=$true)][string]$Carpeta)
-  return (Join-Path $Carpeta $BASES_ARCHIVO)
+  param([Parameter(Mandatory=$true)][string]$Carpeta, [string]$Serie = "")
+  $s = Get-SerieBases $Serie
+  if ($s -eq $BASES_SERIE_POR_DEFECTO) { return (Join-Path $Carpeta $BASES_ARCHIVO) }
+  return (Join-Path $Carpeta ("registro_bases_{0}.json" -f $s))
 }
 
 function Get-NombreBase {
   param([Parameter(Mandatory=$true)][int]$Numero, [string]$Sufijo = "")
-  if ($Sufijo -eq "") { $Sufijo = $BASES_SUFIJO }
+  if ($Sufijo -eq "") { $Sufijo = Get-SufijoSerie }
   return ("BASE {0:D3} {1}.docx" -f $Numero, $Sufijo)
 }
 
-# El numero mas alto que se ve en la carpeta. NO es la memoria -- es la red de la regla 2:
-# si alguien dejo ahi un BASE 040, el contador salta por encima en vez de pisarlo.
+# El numero mas alto que se ve en la carpeta PARA ESTA SERIE. NO es la memoria -- es la red de
+# la regla 2: si alguien dejo ahi un BASE 040, el contador salta por encima en vez de pisarlo.
+#
+# Solo cuentan los documentos de la misma serie. Si contaran todos, la primera BASE 071 PS2
+# haria saltar la PS1 del 050 al 072 -- justo lo que Dorian pidio que no pasara al abrir la PS2.
+# Un documento sin marca de serie ("BASE 040.docx", renombrado a mano) cuenta para la de por
+# defecto, que es la unica que existia cuando se podian dar esos nombres.
 function Get-MaxNumeroEnCarpeta {
-  param([Parameter(Mandatory=$true)][string]$Carpeta)
+  param([Parameter(Mandatory=$true)][string]$Carpeta, [string]$Serie = "")
+  $s = Get-SerieBases $Serie
   $max = 0
   if (-not (Test-Path -LiteralPath $Carpeta)) { return $max }
   foreach ($f in @(Get-ChildItem -LiteralPath $Carpeta -Filter '*.docx' -File -ErrorAction SilentlyContinue)) {
-    if ($f.Name -match '^BASE\s+(\d+)') {
-      $n = [int]$Matches[1]
-      if ($n -gt $max) { $max = $n }
+    if ($f.Name -match '^BASE\s+(\d+)(.*)$') {
+      $n     = [int]$Matches[1]
+      $resto = $Matches[2]
+      $marca = ''
+      if ($resto -match '\b(PS\d+)\b') { $marca = $Matches[1].ToUpper() }
+      $esDeLaSerie = ($marca -eq $s) -or ($marca -eq '' -and $s -eq $BASES_SERIE_POR_DEFECTO)
+      if ($esDeLaSerie -and $n -gt $max) { $max = $n }
     }
   }
   return $max
@@ -88,10 +132,13 @@ function Get-MaxNumeroEnCarpeta {
 # Un registro recien nacido. Nunca se escribe solo: se escribe cuando se aparta el primer
 # numero, para que un registro en disco signifique siempre "aqui hubo una base".
 function New-RegistroVacio {
+  param([string]$Serie = "")
+  $s = Get-SerieBases $Serie
   return [pscustomobject]@{
     version      = $BASES_VERSION
-    sufijo       = $BASES_SUFIJO
-    ultimoNumero = ($BASES_PRIMER_NUMERO - 1)
+    serie        = $s
+    sufijo       = (Get-SufijoSerie $s)
+    ultimoNumero = ($BASES_SERIES[$s] - 1)
     abierta      = $null
     cerradas     = @()
   }
@@ -100,16 +147,27 @@ function New-RegistroVacio {
 # Se asegura de que el objeto leido del JSON tenga todos los campos, y de que las listas sean
 # listas de verdad. ConvertFrom-Json de PowerShell 5.1 devuelve un solo objeto -- no un array
 # de uno -- cuando la lista trae un elemento, y eso reventaria el .Count de mas abajo.
+#
+# El campo serie no existia antes del 18/09/2026: el registro de siempre llega sin el y se le
+# pone el de la serie con que se leyo. Si llega con OTRA serie, el archivo esta en el sitio de
+# otro -- copiado o renombrado a mano -- y se aborta: repartir numeros de una serie con la
+# memoria de otra es reutilizar numeros por la puerta de atras.
 function Repair-FormaRegistro {
-  param($Registro)
-  foreach ($campo in @('version','sufijo','ultimoNumero','abierta','cerradas')) {
+  param($Registro, [string]$Serie = "")
+  $s = Get-SerieBases $Serie
+  foreach ($campo in @('version','serie','sufijo','ultimoNumero','abierta','cerradas')) {
     if (-not $Registro.PSObject.Properties[$campo]) {
       Add-Member -InputObject $Registro -NotePropertyName $campo -NotePropertyValue $null
     }
   }
+  if ([string]::IsNullOrWhiteSpace([string]$Registro.serie)) { $Registro.serie = $s }
+  elseif (([string]$Registro.serie).Trim().ToUpper() -ne $s) {
+    throw ("El registro que se leyo para la serie $s dice ser de la serie '$($Registro.serie)'.`n" +
+           "       Alguien lo copio o lo renombro. No se usa: mira los archivos registro_bases*.json.")
+  }
   if ($null -eq $Registro.version)   { $Registro.version = $BASES_VERSION }
-  if ([string]::IsNullOrWhiteSpace([string]$Registro.sufijo)) { $Registro.sufijo = $BASES_SUFIJO }
-  if ($null -eq $Registro.ultimoNumero) { $Registro.ultimoNumero = ($BASES_PRIMER_NUMERO - 1) }
+  if ([string]::IsNullOrWhiteSpace([string]$Registro.sufijo)) { $Registro.sufijo = Get-SufijoSerie $s }
+  if ($null -eq $Registro.ultimoNumero) { $Registro.ultimoNumero = ($BASES_SERIES[$s] - 1) }
   $Registro.ultimoNumero = [int]$Registro.ultimoNumero
   $Registro.cerradas = @($Registro.cerradas | Where-Object { $null -ne $_ })
   if ($null -ne $Registro.abierta) {
@@ -127,9 +185,10 @@ function Repair-FormaRegistro {
 # en silencio: reiniciarlo repartiria numeros ya usados, que es exactamente el fallo que este
 # archivo viene a cerrar. Un registro roto se arregla a mano -- es texto y se lee con los ojos.
 function Get-RegistroBases {
-  param([Parameter(Mandatory=$true)][string]$Carpeta)
-  $ruta = Get-RutaRegistro -Carpeta $Carpeta
-  if (-not (Test-Path -LiteralPath $ruta)) { return (New-RegistroVacio) }
+  param([Parameter(Mandatory=$true)][string]$Carpeta, [string]$Serie = "")
+  $s    = Get-SerieBases $Serie
+  $ruta = Get-RutaRegistro -Carpeta $Carpeta -Serie $s
+  if (-not (Test-Path -LiteralPath $ruta)) { return (New-RegistroVacio -Serie $s) }
 
   $texto = Get-Content -LiteralPath $ruta -Raw -Encoding UTF8
   if ($null -eq $texto -or $texto.Trim() -eq "") {
@@ -143,7 +202,7 @@ function Get-RegistroBases {
            "       $($_.Exception.Message)`n" +
            "       No se reinicia solo, porque repartiria numeros ya usados. Arreglalo a mano.")
   }
-  return (Repair-FormaRegistro $r)
+  return (Repair-FormaRegistro $r -Serie $s)
 }
 
 # Regla 4: entero o nada. Se escribe a un temporal, se RELEE para comprobar que quedo bien, y
@@ -157,7 +216,8 @@ function Save-RegistroBases {
   if (-not (Test-Path -LiteralPath $Carpeta)) {
     New-Item -ItemType Directory -Path $Carpeta -Force | Out-Null
   }
-  $ruta = Get-RutaRegistro -Carpeta $Carpeta
+  # El registro sabe de que serie es, asi que cada uno vuelve a su propio archivo.
+  $ruta = Get-RutaRegistro -Carpeta $Carpeta -Serie ([string]$Registro.serie)
   $tmp  = "$ruta.nuevo"
   ($Registro | ConvertTo-Json -Depth 6) | Out-File -FilePath $tmp -Encoding utf8 -Force
   $comprobar = Get-Content -LiteralPath $tmp -Raw -Encoding UTF8
@@ -183,10 +243,11 @@ function New-BaseAbierta {
 
   $n = [int]$Registro.ultimoNumero
 
-  # Regla 2: si la carpeta va por delante del registro, gana la carpeta y se dice.
-  $enCarpeta = Get-MaxNumeroEnCarpeta -Carpeta $Carpeta
+  # Regla 2: si la carpeta va por delante del registro, gana la carpeta y se dice. Solo miran
+  # los documentos de la misma serie.
+  $enCarpeta = Get-MaxNumeroEnCarpeta -Carpeta $Carpeta -Serie ([string]$Registro.serie)
   if ($enCarpeta -gt $n) {
-    & $Log "AVISO: la carpeta trae un BASE $('{0:D3}' -f $enCarpeta) y el registro iba por el $('{0:D3}' -f $n)."
+    & $Log "AVISO: la carpeta trae un BASE $('{0:D3}' -f $enCarpeta) $($Registro.serie) y el registro iba por el $('{0:D3}' -f $n)."
     & $Log "       Manda el mas alto: el contador nunca retrocede."
     $n = $enCarpeta
   }
@@ -305,13 +366,15 @@ function Find-ClienteEnBases {
 }
 
 function Show-EstadoBases {
-  param([Parameter(Mandatory=$true)][string]$Carpeta)
-  $reg = Get-RegistroBases -Carpeta $Carpeta
+  param([Parameter(Mandatory=$true)][string]$Carpeta, [string]$Serie = "")
+  $s   = Get-SerieBases $Serie
+  $reg = Get-RegistroBases -Carpeta $Carpeta -Serie $s
   "Carpeta:  $Carpeta"
-  "Registro: $(Get-RutaRegistro -Carpeta $Carpeta)"
+  "Serie:    $s"
+  "Registro: $(Get-RutaRegistro -Carpeta $Carpeta -Serie $s)"
   ""
   if ($null -eq $reg.abierta) {
-    "Base abierta: ninguna. La siguiente seria BASE $('{0:D3}' -f ([int]$reg.ultimoNumero + 1))."
+    "Base abierta: ninguna. La siguiente seria $(Get-NombreBase -Numero ([int]$reg.ultimoNumero + 1) -Sufijo $reg.sufijo)."
   } else {
     $a = $reg.abierta
     $n = @($a.clientes).Count
@@ -330,5 +393,16 @@ function Show-EstadoBases {
   else {
     "Bases cerradas: $($cer.Count)"
     foreach ($b in $cer) { "   $($b.archivo)  --  $($b.clientes) cliente(s), cerrada $($b.cerrada) ($($b.motivo))" }
+  }
+  # Las demas series, en una linea cada una: que se vea que siguen donde iban.
+  ""
+  foreach ($otra in (@($BASES_SERIES.Keys) | Sort-Object)) {
+    if ($otra -eq $s) { continue }
+    $ro = Get-RegistroBases -Carpeta $Carpeta -Serie $otra
+    if ($null -ne $ro.abierta) {
+      "Serie ${otra}: abierta $($ro.abierta.archivo) con $(@($ro.abierta.clientes).Count) cliente(s)."
+    } else {
+      "Serie ${otra}: ninguna abierta. La siguiente seria $(Get-NombreBase -Numero ([int]$ro.ultimoNumero + 1) -Sufijo $ro.sufijo)."
+    }
   }
 }

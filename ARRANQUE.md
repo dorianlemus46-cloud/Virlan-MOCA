@@ -95,7 +95,12 @@ hay que abrir nada ni nombrar nada. Como una tirada son tres a cinco clientes y 
 10, **una base cruza varias corridas**: el lote continúa la que quedó a medias y la cierra
 sola al llegar a 10.
 
+**Hay dos series, y cada una lleva su propia cuenta** (desde el 18/09/2026): la **PS1** de
+siempre y la **PS2**, que empezó en `BASE 071 PS2 VIRLAN.docx`. Numerar en una no mueve a
+la otra. Sin `-Serie` es la PS1; cuál toca en cada momento lo dice Dorian.
+
 ```powershell
+lote.ps1 -Serie PS2    # numerar en la serie PS2; vale también con -VerBases, -CerrarBase...
 lote.ps1 -VerBases     # qué base está abierta, quién va dentro, cuáles están cerradas
 lote.ps1 -CerrarBase   # cerrarla ya, aunque no haya llegado a 10
 

@@ -29,6 +29,8 @@
 #   .\lote.ps1 -Limite 2                  hacer solo los dos primeros clientes
 #   .\lote.ps1 -VerBases                  que base esta abierta, quien va dentro, cuales cerradas
 #   .\lote.ps1 -CerrarBase                cerrarla ya, aunque no haya llegado a 10
+#   .\lote.ps1 -Serie PS2                 numerar en la serie PS2 (BASE 071 PS2 VIRLAN...). Sin
+#                                          -Serie es la PS1 de siempre. Cada una lleva su cuenta.
 #   .\lote.ps1 -Documento "...\BASE.docx" escribir en ESE documento y no en la base automatica
 #   .\lote.ps1 -PausaLineas 6 -PausaLectura 10 -PausaEscribir 8 -PausaResultado 15
 #                                          cambiar el ritmo contra Azul sin tocar ningun archivo
@@ -46,6 +48,9 @@ param(
   [string]$Documento = "",
   # La carpeta donde viven las bases. Vacio = azul\bases. Las pruebas la mandan a otro sitio.
   [string]$Carpeta = "",
+  # La serie de numeracion (bases.ps1). Vacio = PS1, la de siempre. Vale para todo lo de abajo:
+  # -VerBases, -CerrarBase, -Adoptar y -Simular miran y tocan SOLO la serie que se diga.
+  [string]$Serie = "",
   # Cuantos clientes hacen una base. 0 = los 10 de siempre, que define bases.ps1.
   [int]$PorBase = 0,
   # Ensenar el estado de las bases y salir. No toca Azul ni Word.
@@ -91,6 +96,7 @@ if ($Lista -eq "") { $Lista = Join-Path $raiz 'lista_ordenes.csv' }
 . (Join-Path $raiz 'bases.ps1')
 
 $Carpeta = Get-CarpetaBases -Carpeta $Carpeta
+$Serie   = Get-SerieBases $Serie        # una serie desconocida aborta aqui, antes de tocar nada
 if ($PorBase -le 0) { $PorBase = $BASES_POR_BASE }
 
 # Dos modos, y conviene tenerlos separados en la cabeza: el normal, en el que la base la crea y
@@ -113,15 +119,15 @@ function Log([string]$s) { Write-Host ("[{0}] {1}" -f (Ahora), $s) }
 # Van antes que todo lo demas a proposito: preguntar por el estado de las bases o cerrar una a
 # medias no tiene por que exigir una lista de ordenes valida ni Azul abierto.
 if ($VerBases) {
-  Show-EstadoBases -Carpeta $Carpeta
+  Show-EstadoBases -Carpeta $Carpeta -Serie $Serie
   exit 0
 }
 if ($CerrarBase) {
-  $reg = Get-RegistroBases -Carpeta $Carpeta
-  if ($null -eq $reg.abierta) { Log "No hay ninguna base abierta que cerrar."; exit 0 }
+  $reg = Get-RegistroBases -Carpeta $Carpeta -Serie $Serie
+  if ($null -eq $reg.abierta) { Log "No hay ninguna base abierta que cerrar en la serie $Serie."; exit 0 }
   $c = Close-BaseAbierta -Carpeta $Carpeta -Registro $reg -Motivo 'cerrada a mano'
   Log "Base cerrada a mano: $($c.archivo) con $($c.clientes) cliente(s)."
-  Log "La siguiente corrida abrira BASE $('{0:D3}' -f ([int]$reg.ultimoNumero + 1))."
+  Log "La siguiente corrida de la serie $Serie abrira $(Get-NombreBase -Numero ([int]$reg.ultimoNumero + 1) -Sufijo $reg.sufijo)."
   exit 0
 }
 
@@ -371,10 +377,10 @@ if ($Adoptar -ne "") {
   if (-not (Test-Path -LiteralPath $Adoptar)) { throw "No encuentro el documento a adoptar: $Adoptar" }
   $Adoptar = (Resolve-Path -LiteralPath $Adoptar).Path
 
-  $reg = Get-RegistroBases -Carpeta $Carpeta
+  $reg = Get-RegistroBases -Carpeta $Carpeta -Serie $Serie
   if ($null -ne $reg.abierta) {
     throw ("Ya hay una base abierta: $($reg.abierta.archivo), con $(@($reg.abierta.clientes).Count) cliente(s).`n" +
-           "       Cierrala antes de adoptar otra:  lote.ps1 -CerrarBase")
+           "       Cierrala antes de adoptar otra:  lote.ps1 -CerrarBase -Serie $Serie")
   }
 
   Log "Mirando '$(Split-Path $Adoptar -Leaf)'..."
@@ -444,7 +450,7 @@ if ($Simular) {
     Log "Serian $i cliente(s), todos a '$(Split-Path $Documento -Leaf)'. La memoria de bases no se toca."
   }
   else {
-    $regS = Get-RegistroBases -Carpeta $Carpeta
+    $regS = Get-RegistroBases -Carpeta $Carpeta -Serie $Serie
     $numS = [int]$regS.ultimoNumero + 1
     $dentroS = 0
     if ($null -ne $regS.abierta) {
@@ -452,16 +458,16 @@ if ($Simular) {
       $dentroS = @($regS.abierta.clientes).Count
       Log "Base a medias: $($regS.abierta.archivo), con $dentroS de $PorBase cliente(s)."
     } else {
-      Log "No hay base a medias. Se abriria BASE $('{0:D3}' -f $numS)."
+      Log "No hay base a medias en la serie $Serie. Se abriria $(Get-NombreBase -Numero $numS -Sufijo $regS.sufijo)."
     }
     foreach ($o in $ordenes) {
       $i++
       if ($dentroS -ge $PorBase) { $numS++; $dentroS = 0 }
       $dentroS++
-      "  {0,2}. {1}  {2}   ->  BASE {3:D3}  ({4}/{5})" -f $i, $o.Cuenta, $o.Razon, $numS, $dentroS, $PorBase
+      "  {0,2}. {1}  {2}   ->  BASE {3:D3} {6}  ({4}/{5})" -f $i, $o.Cuenta, $o.Razon, $numS, $dentroS, $PorBase, $Serie
     }
     ""
-    Log "Serian $i cliente(s), hasta BASE $('{0:D3}' -f $numS)."
+    Log "Serian $i cliente(s), hasta BASE $('{0:D3}' -f $numS) $Serie."
   }
   Log "El conteo real puede ser menor: los clientes sin nada que renovar no entran al documento"
   Log "y no cuentan para los $PorBase."
@@ -471,7 +477,7 @@ if ($Simular) {
 # Regla 5 de bases.ps1: si la memoria dice que hay una base abierta, su documento tiene que
 # seguir en el disco. Se comprueba ANTES del primer cliente, que es lo unico que cuesta poco.
 if (-not $modoManual) {
-  $script:registro = Get-RegistroBases -Carpeta $Carpeta
+  $script:registro = Get-RegistroBases -Carpeta $Carpeta -Serie $Serie
   $chk = Test-BaseAbierta -Carpeta $Carpeta -Registro $script:registro
   if ($chk.Hay -and -not $chk.Existe) { throw $chk.Problema }
 }
@@ -481,7 +487,7 @@ $inicio  = Get-Date
 if ($modoManual) { Log "Destino a mano: $Documento" }
 else {
   Log "Carpeta de bases: $Carpeta"
-  Log "Una base son $PorBase clientes. El corte lo lleva el sistema y cruza corridas."
+  Log "Serie $Serie. Una base son $PorBase clientes. El corte lo lleva el sistema y cruza corridas."
 }
 Log "Pausas: $PausaLineas s entre lineas, $PausaLectura s antes de leer una linea, $PausaEscribir s antes de buscar, $PausaResultado s de mas en el plazo para reconocer el resultado."
 
@@ -633,12 +639,12 @@ if ($modoManual) { Log "Documento: $(Split-Path $Documento -Leaf)" }
 else {
   # Se relee la memoria del disco a proposito: es lo que de verdad quedo escrito, no lo que
   # esta corrida cree recordar.
-  $fin = Get-RegistroBases -Carpeta $Carpeta
+  $fin = Get-RegistroBases -Carpeta $Carpeta -Serie $Serie
   if ($null -eq $fin.abierta) {
-    Log "No queda ninguna base a medias. La siguiente sera BASE $('{0:D3}' -f ([int]$fin.ultimoNumero + 1))."
+    Log "No queda ninguna base a medias en la serie $Serie. La siguiente sera $(Get-NombreBase -Numero ([int]$fin.ultimoNumero + 1) -Sufijo $fin.sufijo)."
   } else {
     Log "Base a medias: $($fin.abierta.archivo), con $(@($fin.abierta.clientes).Count) de $PorBase cliente(s)."
-    Log "La corrida siguiente sigue ahi. Para cerrarla antes de tiempo: lote.ps1 -CerrarBase"
+    Log "La corrida siguiente de la serie $Serie sigue ahi. Para cerrarla antes de tiempo: lote.ps1 -CerrarBase -Serie $Serie"
   }
   Log "Carpeta: $Carpeta"
 }

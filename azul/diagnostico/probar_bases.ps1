@@ -13,6 +13,9 @@
 #   4. el registro se escribe entero o no se escribe, y si esta roto se aborta
 #   5. si la base abierta desaparecio del disco, se planta y avisa
 #
+# Y desde el 18/09/2026, que cada serie (PS1, PS2) lleva su propia cuenta y ninguna mueve a la
+# otra: la primera BASE 071 PS2 no puede hacer saltar la PS1 del 050 al 072.
+#
 #   & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "...\diagnostico\probar_bases.ps1"
 #   ...\probar_bases.ps1 -Conservar     deja la carpeta temporal para mirarla
 #
@@ -144,6 +147,54 @@ try {
   $reg6 = Get-RegistroBases -Carpeta $carpeta
   Ok "restaurado el registro bueno, se vuelve a leer" ((([int]$reg6.ultimoNumero)) -eq 51)
   Ok "y recuerda las 4 bases cerradas" (@($reg6.cerradas).Count -eq 4)
+
+  # ---- 9. dos series, cada una con su cuenta --------------------------------
+  # Aqui la PS1 va por el 051 y en la carpeta hay un BASE 050 PS1. Lo que se comprueba es lo que
+  # pidio Dorian al abrir la PS2: que la nueva empiece en el 071 sin mover la de siempre.
+  "--- series: la PS2 no mueve a la PS1, ni la PS1 a la PS2 ---"
+  $p2 = Get-RegistroBases -Carpeta $carpeta -Serie 'PS2'
+  Ok "la serie PS2 empieza en el 071" ((([int]$p2.ultimoNumero) + 1) -eq 71)
+  $b71 = New-BaseAbierta -Carpeta $carpeta -Registro $p2 -Log $log
+  Ok "el nombre que toca es BASE 071 PS2 VIRLAN.docx" ($b71.Archivo -eq 'BASE 071 PS2 VIRLAN.docx')
+  New-DocFalso $b71.Ruta
+  $rutaP1 = Get-RutaRegistro -Carpeta $carpeta
+  $rutaP2 = Get-RutaRegistro -Carpeta $carpeta -Serie 'PS2'
+  Ok "la PS2 tiene su propio registro" (($rutaP1 -ne $rutaP2) -and (Test-Path -LiteralPath $rutaP2))
+  Ok "y el de la PS1 conserva el nombre de siempre" ((Split-Path $rutaP1 -Leaf) -eq 'registro_bases.json')
+
+  $p1 = Get-RegistroBases -Carpeta $carpeta -Serie 'PS1'
+  Ok "la PS1 sigue en el 051, sin enterarse de la PS2" (([int]$p1.ultimoNumero) -eq 51)
+  $dichos.Clear()
+  $b52 = New-BaseAbierta -Carpeta $carpeta -Registro $p1 -Log $log
+  Ok "con una BASE 071 PS2 en la carpeta, la PS1 da el 052 y no el 072" ($b52.Numero -eq 52)
+  Ok "y no avisa de ninguna carpeta adelantada" (-not (($dichos -join ' ') -like '*nunca retrocede*'))
+  [void](Close-BaseAbierta -Carpeta $carpeta -Registro $p1 -Motivo 'prueba')
+  [void](Close-BaseAbierta -Carpeta $carpeta -Registro $p2 -Motivo 'prueba')
+
+  New-DocFalso (Join-Path $carpeta 'BASE 090 PS1 VIRLAN.docx')     # la PS1 se adelanta mucho
+  $p2b = Get-RegistroBases -Carpeta $carpeta -Serie 'ps2 '
+  $b72 = New-BaseAbierta -Carpeta $carpeta -Registro $p2b -Log $log
+  Ok "un BASE 090 de la PS1 tampoco mueve a la PS2 (072)" ($b72.Numero -eq 72)
+  Ok "la serie se escribe bien aunque llegue en minusculas" ($b72.Archivo -eq 'BASE 072 PS2 VIRLAN.docx')
+  [void](Close-BaseAbierta -Carpeta $carpeta -Registro $p2b -Motivo 'prueba')
+
+  New-DocFalso (Join-Path $carpeta 'BASE 095.docx')                 # renombrado a mano, sin serie
+  Ok "un documento sin serie cuenta para la PS1" ((Get-MaxNumeroEnCarpeta -Carpeta $carpeta -Serie 'PS1') -eq 95)
+  Ok "y no para la PS2"                          ((Get-MaxNumeroEnCarpeta -Carpeta $carpeta -Serie 'PS2') -eq 71)
+
+  $abortoSerie = $false
+  try { [void](Get-RegistroBases -Carpeta $carpeta -Serie 'PS9') } catch { $abortoSerie = $true }
+  Ok "una serie que no existe aborta en vez de abrir un contador nuevo" $abortoSerie
+
+  # El registro de la PS2 puesto en el sitio del de la PS1: tiene que abortar, no repartir
+  # numeros de una serie con la memoria de la otra.
+  $buenoP1 = Get-Content -LiteralPath $rutaP1 -Raw -Encoding UTF8
+  Copy-Item -LiteralPath $rutaP2 -Destination $rutaP1 -Force
+  $abortoCruzado = $false
+  try { [void](Get-RegistroBases -Carpeta $carpeta -Serie 'PS1') } catch { $abortoCruzado = $true }
+  Ok "un registro de otra serie en el sitio equivocado aborta" $abortoCruzado
+  Set-Content -LiteralPath $rutaP1 -Value $buenoP1 -Encoding UTF8 -NoNewline
+  Ok "devuelto el suyo, la PS1 vuelve a leerse (052)" (([int](Get-RegistroBases -Carpeta $carpeta -Serie 'PS1').ultimoNumero) -eq 52)
 }
 finally {
   if ($Conservar) { ""; "Carpeta conservada: $carpeta" }

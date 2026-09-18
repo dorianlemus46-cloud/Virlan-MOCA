@@ -72,7 +72,9 @@ Llena un formulario de consulta. No modifica ningún dato del cliente.
 la pestaña `Suscripciones` · el enlace `Cliente:` · el ícono de teléfono con lupa ·
 la X de la barra de título del marco del cliente · la X de la barra de título del
 marco de interacción (`Inicio de Interacción...`) · **`Descartar`, y solo en el aviso
-que sale al cerrar una de esas dos subventanas — condiciones exactas en el punto 4.1**.
+que sale al cerrar una de esas dos subventanas — condiciones exactas en el punto 4.1** ·
+el botón contador **`20+ Registro/s`** de la tabla de Suscripciones, **`Guardar`** en la
+ventana que ese botón abre, y el cierre de esa ventana — **solo en el caso del punto 4.2**.
 
 ---
 
@@ -84,7 +86,7 @@ Ningún botón cuyo nombre sea o contenga:
 |---|---|
 | **`Crear`** | En la vista general del cliente (ciclo 2) y en el formulario en blanco que aparece mientras esa vista todavía no ha cargado. |
 | **`Exportar`** | En la interfaz de Azul. Decisión tomada: no se usan; se mantiene el ciclo 1. |
-| **`Guardar`** | En cualquier pantalla. |
+| **`Guardar`** | En cualquier pantalla. **Una sola excepción, en el punto 4.2.** |
 | **`Aprobar`** | En cualquier pantalla. |
 | **`Descartar`** | En cualquier pantalla. **Una sola excepción, detallada justo abajo.** |
 | **`Eliminar`** | En cualquier pantalla. |
@@ -123,6 +125,52 @@ pulsa nada**, se deja la pantalla como está y se avisa a Dorian.
 > Esto **corrige** la nota del ciclo 3, que daba por hecho que cerrar con la X nunca pedía
 > confirmación: eso se comprobó el 09/09/2026 con los campos vacíos, y no vale cuando la
 > navegación ya dejó el borrador marcado con asterisco.
+
+### 4.2 La segunda excepción: `Guardar` en la ventana de `20+ Registro/s`
+
+*(autorizada por Dorian el 18/09/2026: "agrega el botón guardar solo en este caso, como
+excepción")*
+
+La tabla de Suscripciones enseña **20 filas como mucho**. Cuando el cliente tiene más, las
+que faltan no se leen, y el cliente puede acabar mal clasificado o fuera de la base. Arriba,
+en la banda del cliente, Azul dice cuántas tiene de verdad: el recuadro del teléfono,
+**`N Inalámbricos`**.
+
+Se permite, **en un solo sitio y bajo todas estas condiciones a la vez**:
+
+1. **Los números no empatan.** El número de `N Inalámbricos` es **mayor** que las filas que
+   trae la tabla. Si empatan, no se pulsa nada.
+2. **Son 50 o menos.** Con **más de 50 inalámbricas el cliente se salta entero**: no se pulsa
+   el botón, no se lee y no entra a la base. Queda anotado con el motivo.
+3. Se pulsa **`20+ Registro/s`**, el botón contador de la tabla de Suscripciones del cliente
+   que se acaba de cargar, y nada más de esa fila de botones (`Ver Todo` sigue sin tocarse).
+4. En la ventana que se abre **como consecuencia directa de ese clic** se escribe **solo la
+   cantidad de líneas**: el número de `N Inalámbricos`. Ningún otro campo se toca.
+5. Antes de pulsar `Guardar` se **anota al progreso** el texto de esa ventana y el número
+   escrito.
+6. Se pulsa **`Guardar`** en esa ventana y se **cierra**. Después se vuelve a leer la tabla.
+
+Fuera de eso, `Guardar` sigue prohibido en **cualquier** pantalla. Si la ventana no es la
+esperada, trae otros campos o botones, o aparece sin nuestro clic: **no se pulsa nada**, se
+deja la pantalla como está y se avisa a Dorian.
+
+> **Cómo es la ventana (vista y probada el 18/09/2026 con un cliente de 24 inalámbricas y 20
+> filas).**
+> Es un cuadro de diálogo **aparte**, una ventana suelta en el centro de la pantalla, no un
+> marco dentro de Azul. Por eso no sale en la foto de la ventana principal. Se titula
+> `Inicio de Interacción [N] - <id> > Cambiar los registros máximos`, dice *"El Límite de
+> usuario debe ser menor al límite del sistema."*, trae **un solo campo**,
+> `Límite del usuario:` (estaba en 20), el texto `Límite del sistema: 200` y tres botones:
+> `Guardar y buscar`, **`Guardar`** y `Cancelar`. **Solo se pulsa `Guardar`**; los otros
+> dos no. Al pulsarlo **la ventana se cierra sola** y la tabla se recarga en un par de
+> segundos con las filas nuevas; el botón contador pasa a decir `24+ Registro/s`.
+>
+> **El `N Inalámbricos` cuenta también las canceladas.** Con el límite en 24 salieron 17
+> activas y 7 canceladas, que suman 24. La comparación es, por tanto, contra **todas** las
+> filas de la tabla, no solo contra las activas. Medido en un solo cliente.
+>
+> **Sin confirmar:** si el límite se queda guardado para los clientes siguientes. Es un
+> límite "del usuario", así que lo esperable es que sí.
 
 Tampoco se pulsan los otros tres íconos de la fila del teléfono con lupa —
 persona+lupa, dos personas+lupa y lentes— ni el campo de texto suelto a su izquierda.
