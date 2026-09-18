@@ -11,18 +11,16 @@ param(
   # La lista de ordenes en CSV. Vacio = lista_ordenes.csv junto al script.
   [string]$Lista = "",
   # Donde esta el icono del telefono con lupa, relativo a la esquina de la ventana de Azul.
-  # En 0 -- lo normal -- NO se usa una posicion: se busca el icono en la ventana y se pica
-  # donde este de verdad. Ver Find-IconoLupa en captura.ps1.
+  # En 0 -- lo normal -- lo decide la maquina (Test-ClicMirando en captura.ps1): la posicion
+  # fija de siempre, 791,121, o mirando la ventana si azul\esta_maquina.json lo pide.
   #
-  # Hasta el 18/09/2026 aqui habia 791,121, medido a mano el 03/09/2026 con zoom.ps1 sobre
-  # la ventana en 1366x768, porque ese icono es contenido de un navegador incrustado y el
-  # puente de accesibilidad no lo ve. Funciono 220 clientes y despues fallo: la barra de
-  # Azul se corre a la derecha cuando el panel de la izquierda cambia de ancho, y el clic
-  # empezo a caer 55 pixeles antes del icono, en un campo vacio. Una posicion aprendida no
-  # sirve para algo que se mueve.
+  # 791,121 se midio a mano el 03/09/2026 con zoom.ps1 sobre la ventana en 1366x768, porque
+  # ese icono es contenido de un navegador incrustado y el puente de accesibilidad no lo ve.
+  # El 18/09/2026, en una de las laptops, la barra aparecio corrida 55 pixeles a la derecha
+  # y el clic empezo a caer antes del icono, en un campo vacio; no se sabe por que se corrio.
+  # En esa se pica mirando. En la otra la posicion fija sigue acertando.
   #
-  # Se dejan como parametro para poder forzar la posicion a mano si algun dia el dibujo del
-  # icono cambia y dejara de reconocerse. Con los dos mayores que 0 se pica ahi sin mirar.
+  # Con los dos mayores que 0 se pica ahi, diga lo que diga la maquina.
   [int]$IconoX = 0,
   [int]$IconoY = 0,
   # No hacer clic: exige que el formulario ya este abierto. Para correr sin tocar el mouse.
@@ -916,13 +914,17 @@ if ($DesdeResultados) {
   } elseif ($SinClic) {
     "ERROR: el formulario no esta abierto y se pidio -SinClic."; exit 1
   } else {
-    # Donde picar no se recuerda: se mira. Ver Find-IconoLupa en captura.ps1 y el porque
-    # en el comentario de -IconoX. Con -IconoX/-IconoY a mano se pica ahi sin mirar, que
-    # es la salida de emergencia por si algun dia el dibujo del icono cambia.
+    # Donde picar la lupita lo decide la maquina: la posicion fija de siempre, o mirando si
+    # azul\esta_maquina.json lo pide. Ver Test-ClicMirando en captura.ps1. Con -IconoX/-IconoY
+    # a mano se pica ahi, diga lo que diga la maquina.
     if ($IconoX -gt 0 -and $IconoY -gt 0) {
       $ix = $IconoX; $iy = $IconoY
       "Clic real en el icono del telefono con lupa ($ix,$iy), posicion forzada a mano."
       [Busca]::Nota("buscar: clic forzado en el icono en ($ix,$iy)")
+    } elseif (-not (Test-ClicMirando)) {
+      $ix = $script:LUPA_FIJA.X; $iy = $script:LUPA_FIJA.Y
+      "Clic real en el icono del telefono con lupa ($ix,$iy), posicion fija."
+      [Busca]::Nota("buscar: clic en el icono en la posicion fija ($ix,$iy)")
     } else {
       $lupa = Find-IconoLupa -Hwnd $hwnd
       if (-not $lupa.Ok) {

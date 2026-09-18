@@ -213,8 +213,8 @@ public class AzulShot {
   // El icono del telefono con lupa es contenido de un navegador incrustado: el puente de
   // accesibilidad no lo ve, asi que no hay a quien preguntarle donde esta. Hasta el
   // 18/09/2026 se picaba en una posicion medida a mano el 03/09/2026 (791,121). Ese dia
-  // fallo: la barra de Azul se corre a la derecha cuando el panel de la izquierda cambia
-  // de ancho, y el clic cayo 55 pixeles antes del icono, en un campo vacio. Es el mismo
+  // fallo en una de las laptops: la barra de Azul aparecio corrida 55 pixeles a la derecha,
+  // no se sabe por que, y el clic cayo antes del icono, en un campo vacio. Recuerda al
   // movimiento que ya estaba anotado para la pestana de Suscripciones, que se iba de
   // x=826 a x=895.
   //
@@ -360,6 +360,38 @@ function Invoke-AzulClick {
 # Wait-PantallaEstable ya no pasa por aqui: dentro de su bucle los bitmaps estan en memoria
 # y bajarlos a disco para volver a subirlos era el rodeo mas caro de la captura. Ver
 # [AzulShot]::Diferencia, que hace el mismo muestreo sobre bitmaps vivos.
+
+# ---- como se pica en ESTA maquina: en las posiciones de siempre, o mirando -----
+# La lupita del telefono y el enlace "Cliente:" son contenido del navegador incrustado y el
+# puente no los ve. Hay dos formas de saber donde picarlos:
+#
+#   - FIJA, lo de siempre, y lo que se hace si no se dice nada: las posiciones medidas a
+#     mano, 791,121 la lupita y 500,120 el enlace (REGLAS.md seccion 5).
+#   - MIRANDO: se busca la lupita en la ventana (Find-IconoLupa, aqui abajo) y el enlace se
+#     saca a 291 pixeles a su izquierda.
+#
+# Por que no se mira en todas las maquinas: el 18/09/2026, en una de las dos laptops, la
+# barra de Azul se corrio 55 pixeles y las posiciones fijas empezaron a fallar; ahi se pica
+# mirando. En la otra las fijas aciertan, y Dorian pidio que ahi no se toque (18/09/2026).
+# La huella de la lupita se saco en una sola maquina, y con otra escala de pantalla podria
+# no reconocerse.
+#
+# Lo decide un archivo que NO va a git, azul\esta_maquina.json, con {"ClicMirando": true}.
+# Si no existe, o no se entiende, se pica en las posiciones fijas: la maquina que no dice
+# nada se queda exactamente como estaba.
+$script:LUPA_FIJA   = @{ X = 791; Y = 121 }
+$script:ENLACE_FIJO = @{ X = 500; Y = 120 }
+
+function Test-ClicMirando {
+  $f = Join-Path $PSScriptRoot 'esta_maquina.json'
+  if (-not (Test-Path -LiteralPath $f)) { return $false }
+  try {
+    $c = Get-Content -LiteralPath $f -Raw | ConvertFrom-Json
+    return ($c.ClicMirando -eq $true)
+  } catch {
+    return $false
+  }
+}
 
 # Huella del icono del telefono con lupa, sacada de Azul de verdad el 18/09/2026 con
 # PrintWindow sobre la ventana maximizada en 1366x768. Es el dibujo reducido a tinta/no

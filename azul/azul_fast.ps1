@@ -17,20 +17,20 @@ param(
   [int]$PausaLineas = 4,   # entre cerrar el detalle de una linea y seleccionar la siguiente
   [int]$PausaLectura = 7,  # entre abrir el detalle de una linea y empezar a leerlo
   # Donde esta el enlace "Cliente:" de la banda de arriba, en coordenadas RELATIVAS a la
-  # esquina superior izquierda de la ventana de Azul. En 0 -- lo normal -- NO se usa una
-  # posicion fija: se saca de donde esta HOY la lupita del telefono (Find-IconoLupa en
-  # captura.ps1), que si se sabe encontrar mirando la ventana.
+  # esquina superior izquierda de la ventana de Azul. En 0 -- lo normal -- lo decide la
+  # maquina (Test-ClicMirando en captura.ps1): la posicion fija de siempre, 500,120, o sacada
+  # de donde esta HOY la lupita del telefono si azul\esta_maquina.json lo pide.
   #
-  # Ese enlace es contenido de un navegador incrustado y el puente no lo ve. Hasta el
-  # 18/09/2026 aqui habia 500,120, medido el 04/09/2026 (el enlace ARRANCA en x~491 y crece
-  # hacia la derecha con el nombre, asi que 500 cae dentro del primer caracter). Ese dia la
-  # barra entera se corrio 55 pixeles a la derecha y el clic cayo delante de la etiqueta:
-  # un cliente se quedo sin foto. La lupita se corrio exactamente lo mismo (791 -> 846) y el
+  # Ese enlace es contenido de un navegador incrustado y el puente no lo ve. 500,120 se midio
+  # el 04/09/2026: el enlace ARRANCA en x~491 y crece hacia la derecha con el nombre, asi que
+  # 500 cae dentro del primer caracter. El 18/09/2026, en una de las laptops, la barra entera
+  # aparecio corrida 55 pixeles a la derecha y el clic cayo delante de la etiqueta: seis
+  # clientes se quedaron sin foto. La lupita se corrio exactamente lo mismo (791 -> 846) y el
   # enlace tambien (491 -> 546): van en bloque, a 300 pixeles uno del otro medidos las dos
-  # veces. Por eso se pica a 291 de la lupita, que son los mismos 9 pixeles dentro del
-  # nombre que daba el 500.
+  # veces. Por eso, mirando, se pica a 291 de la lupita, que son los mismos 9 pixeles dentro
+  # del nombre que daba el 500.
   #
-  # Con los dos mayores que 0 se pica ahi sin mirar, como salida de emergencia.
+  # Con los dos mayores que 0 se pica ahi, diga lo que diga la maquina.
   [int]$ClienteX = 0,
   [int]$ClienteY = 0,
   # AVERIGUACION: volcar al progreso todos los campos del detalle de la PRIMERA linea leida,
@@ -1414,18 +1414,23 @@ $ENLACE_DESDE_LUPA_Y = 1
 $imagen = ""
 if (-not $SoloLeer) {
   if ($valeLaFoto) {
-    # Donde picar el enlace "Cliente:" no se recuerda: se saca de donde esta HOY la lupita.
-    # Ver el comentario de -ClienteX. Con -ClienteX/-ClienteY a mano se pica ahi sin mirar.
+    # Donde picar el enlace "Cliente:" lo decide la maquina: la posicion fija de siempre, o
+    # sacada de donde esta HOY la lupita si azul\esta_maquina.json lo pide. Ver el comentario
+    # de -ClienteX y Test-ClicMirando en captura.ps1. Con -ClienteX/-ClienteY a mano se pica ahi.
     $cx = $ClienteX; $cy = $ClienteY
     if (-not ($cx -gt 0 -and $cy -gt 0)) {
-      $lupa = Find-IconoLupa -Hwnd $hwnd
-      if ($lupa.Ok) {
-        $cx = $lupa.X - $ENLACE_DESDE_LUPA_X
-        $cy = $lupa.Y - $ENLACE_DESDE_LUPA_Y
-        [Azul]::Nota("captura: lupita en ($($lupa.X),$($lupa.Y)), enlace Cliente en ($cx,$cy)")
+      if (-not (Test-ClicMirando)) {
+        $cx = $script:ENLACE_FIJO.X; $cy = $script:ENLACE_FIJO.Y
       } else {
-        $cx = 0; $cy = 0
-        [Azul]::Nota("captura: sin lupita no se sabe donde esta el enlace -- $($lupa.Por)")
+        $lupa = Find-IconoLupa -Hwnd $hwnd
+        if ($lupa.Ok) {
+          $cx = $lupa.X - $ENLACE_DESDE_LUPA_X
+          $cy = $lupa.Y - $ENLACE_DESDE_LUPA_Y
+          [Azul]::Nota("captura: lupita en ($($lupa.X),$($lupa.Y)), enlace Cliente en ($cx,$cy)")
+        } else {
+          $cx = 0; $cy = 0
+          [Azul]::Nota("captura: sin lupita no se sabe donde esta el enlace -- $($lupa.Por)")
+        }
       }
     }
     if ($cx -gt 0 -and $cy -gt 0) {

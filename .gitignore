@@ -45,3 +45,8 @@ azul/respaldo-capturas/
 *.tmp
 Thumbs.db
 desktop.ini
+
+# Como se pica en ESTA maquina (Test-ClicMirando en azul\captura.ps1). Es de cada laptop y
+# no del proyecto: en una la barra de Azul aparecio corrida y ahi se pica mirando; en la otra
+# las posiciones fijas aciertan. Si este archivo viajara, cambiaria como pica la otra.
+azul/esta_maquina.json
