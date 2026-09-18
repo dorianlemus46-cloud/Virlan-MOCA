@@ -208,6 +208,86 @@ public class AzulShot {
       a.UnlockBits(da);
     }
   }
+
+  // ---- encontrar un icono MIRANDOLO, en vez de recordar donde estaba ----------
+  // El icono del telefono con lupa es contenido de un navegador incrustado: el puente de
+  // accesibilidad no lo ve, asi que no hay a quien preguntarle donde esta. Hasta el
+  // 18/09/2026 se picaba en una posicion medida a mano el 03/09/2026 (791,121). Ese dia
+  // fallo: la barra de Azul se corre a la derecha cuando el panel de la izquierda cambia
+  // de ancho, y el clic cayo 55 pixeles antes del icono, en un campo vacio. Es el mismo
+  // movimiento que ya estaba anotado para la pestana de Suscripciones, que se iba de
+  // x=826 a x=895.
+  //
+  // Asi que no se recuerda una posicion: se reconoce el dibujo. La huella es el icono
+  // reducido a tinta/no-tinta por luminancia, que aguanta cambios de fondo y de suavizado
+  // mucho mejor que comparar colores exactos.
+  //
+  // Devuelve la ESQUINA del mejor encaje, no el centro, y con ella tres numeros en
+  // diezmilesimas: cuanto coincide en total, cuanta de la tinta de la huella aparece, y
+  // cuanto coincide el segundo mejor encaje lejos del primero. El que llama decide si eso
+  // basta. Con un segundo encaje casi tan bueno hay dos cosas parecidas en pantalla, y lo
+  // prudente entonces es no picar.
+  public static string BuscaHuella(Bitmap b, string mascara, int mw, int mh,
+                                   int x0, int y0, int x1, int y1, int umbral) {
+    if (b == null || mascara == null) return "NADA|huella o imagen vacia";
+    if (mw <= 0 || mh <= 0 || mascara.Length != mw * mh) return "NADA|la huella no mide mw*mh";
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > b.Width  - mw) x1 = b.Width  - mw;
+    if (y1 > b.Height - mh) y1 = b.Height - mh;
+    if (x1 < x0 || y1 < y0) return "NADA|la zona de busqueda no cabe en la ventana";
+    int ntinta = 0;
+    for (int i = 0; i < mascara.Length; i++) if (mascara[i] == '1') ntinta++;
+    if (ntinta == 0) return "NADA|la huella no tiene tinta";
+
+    int ancho = b.Width, alto = b.Height;
+    byte[] tinta = new byte[ancho * alto];
+    Rectangle rc = new Rectangle(0, 0, ancho, alto);
+    BitmapData d = b.LockBits(rc, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+    try {
+      byte[] fila = new byte[d.Stride];
+      for (int y = 0; y < alto; y++) {
+        Marshal.Copy((IntPtr)(d.Scan0.ToInt64() + (long)y * d.Stride), fila, 0, d.Stride);
+        int bas = y * ancho;
+        for (int x = 0; x < ancho; x++) {
+          int o = x * 4;   // BGRA: la media de los tres no depende del orden
+          int lum = (fila[o] + fila[o + 1] + fila[o + 2]) / 3;
+          tinta[bas + x] = (byte)(lum < umbral ? 1 : 0);
+        }
+      }
+    } finally {
+      b.UnlockBits(d);
+    }
+
+    int celdas = mw * mh;
+    int mejor = -1, segundo = -1, mx = -1, my = -1, mejorTinta = 0;
+    for (int y = y0; y <= y1; y++) {
+      for (int x = x0; x <= x1; x++) {
+        int acuerdo = 0, aciertos = 0;
+        for (int j = 0; j < mh; j++) {
+          int fo = (y + j) * ancho + x;
+          int mo = j * mw;
+          for (int i = 0; i < mw; i++) {
+            bool t = mascara[mo + i] == '1';
+            bool c = tinta[fo + i] != 0;
+            if (t == c) acuerdo++;
+            if (t && c) aciertos++;
+          }
+        }
+        int s = (int)((long)acuerdo * 10000 / celdas);
+        bool lejos = (mx < 0) || (Math.Abs(x - mx) > mw) || (Math.Abs(y - my) > mh);
+        if (s > mejor) {
+          if (lejos) segundo = mejor;
+          mejor = s; mx = x; my = y;
+          mejorTinta = (int)((long)aciertos * 10000 / ntinta);
+        } else if (s > segundo && lejos) {
+          segundo = s;
+        }
+      }
+    }
+    if (mx < 0) return "NADA|no se recorrio ninguna posicion";
+    return "OK|" + mx + "," + my + "," + mejor + "," + mejorTinta + "," + segundo;
+  }
 }
 '@
 }
@@ -280,6 +360,73 @@ function Invoke-AzulClick {
 # Wait-PantallaEstable ya no pasa por aqui: dentro de su bucle los bitmaps estan en memoria
 # y bajarlos a disco para volver a subirlos era el rodeo mas caro de la captura. Ver
 # [AzulShot]::Diferencia, que hace el mismo muestreo sobre bitmaps vivos.
+
+# Huella del icono del telefono con lupa, sacada de Azul de verdad el 18/09/2026 con
+# PrintWindow sobre la ventana maximizada en 1366x768. Es el dibujo reducido a tinta/no
+# tinta: un 1 por cada pixel mas oscuro que Umbral. Se guarda como texto y no como PNG
+# a proposito -- asi el proyecto sigue siendo archivos .ps1 legibles y no hay un binario
+# suelto que nadie sepa de donde salio ni como volver a generarlo.
+#
+# DX y DY llevan de la esquina de la huella al centro del BOTON, que es donde hay que
+# picar: el recorte empieza en 835,112 y el boton esta centrado en 846,121.
+$script:HuellaLupa = @{
+  Ancho  = 25
+  Alto   = 19
+  DX     = 11
+  DY     = 9
+  Umbral = 160
+  Mascara = '0000000000000000000000000000001100000000000000000000011111000000000000000000001111100000000000000000000111110000111100000000000011110000110001000000000001110000010000010000000000111000001000001000000000011100000100001100000000000111000011001110000000000011100000011001000000000001111000000000010000000000011100010000000000000000000111111110000000000000000001111111000000000000000000011111000000000000000000000011000000000000000000000000000000000000000000000000000000000000000'
+}
+
+# Donde esta HOY el icono del telefono con lupa, mirando la ventana en vez de recordarlo.
+#
+# No sube Azul al frente ni lo toca: PrintWindow pinta la ventana aunque este tapada.
+#
+# Devuelve una tabla con Ok, y si Ok es falso, Por con el motivo. NUNCA devuelve una
+# posicion "a lo mejor": si el dibujo no aparece bastante claro, o aparece dos veces, dice
+# que no y el que llama debe negarse a picar. Un clic a ciegas en esa barra cae en los
+# iconos vecinos, que abren otras cosas.
+function Find-IconoLupa {
+  param(
+    [Parameter(Mandatory=$true)][IntPtr]$Hwnd,
+    # En diezmilesimas. Coincidencia total minima, tinta reconocida minima, y cuanto tiene
+    # que quedarse atras el segundo mejor encaje para fiarse del primero.
+    [int]$MinAcuerdo    = 9300,
+    [int]$MinTinta      = 8000,
+    [int]$MargenSegundo = 150,
+    # Franja vertical donde vive la barra de iconos. Se busca en todo el ancho porque lo
+    # que se mueve es justo eso, pero no en todo el alto: mas abajo empieza el contenido
+    # del cliente y no hay por que darle ocasion de parecerse.
+    [int]$Arriba = 60,
+    [int]$Abajo  = 260
+  )
+  $hu = $script:HuellaLupa
+  $bmp = [AzulShot]::Capture($Hwnd)
+  if ($null -eq $bmp) { return @{ Ok = $false; Por = "la ventana de Azul no tiene tamano utilizable" } }
+  try {
+    $r = [AzulShot]::BuscaHuella($bmp, $hu.Mascara, $hu.Ancho, $hu.Alto,
+                                 0, $Arriba, $bmp.Width, $Abajo, $hu.Umbral)
+  } finally { $bmp.Dispose() }
+
+  if ($r -notlike 'OK|*') { return @{ Ok = $false; Por = ($r -split '\|', 2)[1] } }
+  $n = ($r -split '\|', 2)[1] -split ','
+  $x = [int]$n[0]; $y = [int]$n[1]
+  $acuerdo = [int]$n[2]; $tinta = [int]$n[3]; $segundo = [int]$n[4]
+  $cx = $x + $hu.DX
+  $cy = $y + $hu.DY
+  $detalle = "encaje $acuerdo, tinta $tinta, segundo $segundo (de 10000)"
+
+  if ($acuerdo -lt $MinAcuerdo) {
+    return @{ Ok = $false; Por = "el icono no aparece claro en la ventana: $detalle"; X = $cx; Y = $cy }
+  }
+  if ($tinta -lt $MinTinta) {
+    return @{ Ok = $false; Por = "el dibujo del icono no cuadra: $detalle"; X = $cx; Y = $cy }
+  }
+  if ($segundo -ge 0 -and ($acuerdo - $segundo) -lt $MargenSegundo) {
+    return @{ Ok = $false; Por = "hay dos sitios que se parecen al icono, no se pica: $detalle"; X = $cx; Y = $cy }
+  }
+  return @{ Ok = $true; X = $cx; Y = $cy; Acuerdo = $acuerdo; Tinta = $tinta; Segundo = $segundo; Detalle = $detalle }
+}
 function Test-CapturasDistintas {
   param(
     [Parameter(Mandatory=$true)][string]$Antes,

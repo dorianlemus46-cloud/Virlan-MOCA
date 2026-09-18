@@ -58,6 +58,10 @@ param(
   [switch]$Confirmar,
   # 0 = toda la lista.
   [int]$Limite = 0,
+  # Parar en cuanto se cierre una base, en vez de seguir y abrir la siguiente. Para pedir "una
+  # base entera y nada mas" sin tener que adivinar cuantos clientes de la lista hacen falta:
+  # se le da una rebanada larga y se detiene sola al llegar a los 10.
+  [switch]$UnaBase,
   # Recorrer y explicar el plan sin tocar nada.
   [switch]$Simular,
   # Tope de tiempo, en segundos, para CADA proceso hijo. Al vencer se mata y se sigue.
@@ -479,10 +483,21 @@ else {
   Log "Carpeta de bases: $Carpeta"
   Log "Una base son $PorBase clientes. El corte lo lleva el sistema y cruza corridas."
 }
-Log "Pausas: $PausaLineas s entre lineas, $PausaLectura s antes de leer una linea, $PausaEscribir s antes de buscar, $PausaResultado s antes de leer el resultado de la busqueda."
+Log "Pausas: $PausaLineas s entre lineas, $PausaLectura s antes de leer una linea, $PausaEscribir s antes de buscar, $PausaResultado s de mas en el plazo para reconocer el resultado."
 
 try {
   foreach ($o in $ordenes) {
+    # --- sigue Azul ahi? ---
+    # Si Azul se ha caido, los hijos fallan en dos segundos y la corrida se come el resto de la
+    # lista marcando a todo el mundo como fallo. Paso de verdad el 17/09/2026: Azul murio a los
+    # 32 min con 1.7 GB y el lote quemo 14 clientes seguidos en 22 segundos. Se para en seco y
+    # no se anota nada de ellos, para que la lista se pueda relanzar tal cual.
+    if ($null -eq (Get-Process -Name jp2launcher -ErrorAction SilentlyContinue)) {
+      Log "AZUL NO ESTA. Se para aqui: los clientes que faltan no se tocan ni se anotan."
+      Log "Vuelve a abrir Azul y relanza la misma lista; los ya escritos se saltan solos."
+      break
+    }
+
     Log "=== $($o.Cuenta)  $($o.Razon) ==="
 
     # --- ya esta escrito? ---
@@ -582,7 +597,13 @@ try {
     }
     Add-Progreso $o.Cuenta $o.Razon 'ESCRITO' $nombreDoc "$($r.Renovables) renovables, $($r.NoRenovables) no renovables, $($r.Revisar) a revisar"
 
-    if (-not $modoManual) { Complete-BaseSiToca -Dentro $dentro }
+    if (-not $modoManual) {
+      Complete-BaseSiToca -Dentro $dentro
+      if ($UnaBase -and $dentro -ge $PorBase) {
+        Log "Se pidio UNA base: la lista sigue teniendo clientes, pero la corrida para aqui."
+        break
+      }
+    }
   }
 } finally {
   # Se guarda pase lo que pase: es trabajo real.

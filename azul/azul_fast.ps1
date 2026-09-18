@@ -17,23 +17,38 @@ param(
   [int]$PausaLineas = 4,   # entre cerrar el detalle de una linea y seleccionar la siguiente
   [int]$PausaLectura = 7,  # entre abrir el detalle de una linea y empezar a leerlo
   # Donde esta el enlace "Cliente:" de la banda de arriba, en coordenadas RELATIVAS a la
-  # esquina superior izquierda de la ventana de Azul. Va como parametro y no clavado porque
-  # ese enlace es contenido de un navegador incrustado y el puente no lo ve, asi que no hay
-  # forma de preguntarle donde esta.
+  # esquina superior izquierda de la ventana de Azul. En 0 -- lo normal -- NO se usa una
+  # posicion fija: se saca de donde esta HOY la lupita del telefono (Find-IconoLupa en
+  # captura.ps1), que si se sabe encontrar mirando la ventana.
   #
-  # 500 y no 529, medido el 04/09/2026 sobre dos capturas con cliente cargado: el enlace
-  # ARRANCA siempre en x~491 y se extiende hacia la derecha segun el largo del nombre. Con
-  # 'CLIENTE EJE...' llegaba hasta x~568 y 529 caia dentro; con 'ACME' termina en x~520 y 529
-  # caia 9 px FUERA, sobre gris. Por eso la foto se perdia con los clientes de nombre corto.
-  # 500 cae dentro del primer caracter del nombre sea cual sea su largo.
-  [int]$ClienteX = 500,
-  [int]$ClienteY = 120,
+  # Ese enlace es contenido de un navegador incrustado y el puente no lo ve. Hasta el
+  # 18/09/2026 aqui habia 500,120, medido el 04/09/2026 (el enlace ARRANCA en x~491 y crece
+  # hacia la derecha con el nombre, asi que 500 cae dentro del primer caracter). Ese dia la
+  # barra entera se corrio 55 pixeles a la derecha y el clic cayo delante de la etiqueta:
+  # un cliente se quedo sin foto. La lupita se corrio exactamente lo mismo (791 -> 846) y el
+  # enlace tambien (491 -> 546): van en bloque, a 300 pixeles uno del otro medidos las dos
+  # veces. Por eso se pica a 291 de la lupita, que son los mismos 9 pixeles dentro del
+  # nombre que daba el 500.
+  #
+  # Con los dos mayores que 0 se pica ahi sin mirar, como salida de emergencia.
+  [int]$ClienteX = 0,
+  [int]$ClienteY = 0,
   # AVERIGUACION: volcar al progreso todos los campos del detalle de la PRIMERA linea leida,
   # no solo los cinco que el lector usa. Sirve para ver que mas trae Azul en esa tabla sin
   # adivinar -- por ejemplo si el nombre comercial del telefono esta en algun campo. No cambia
   # nada de lo que se lee ni de lo que se escribe.
-  [switch]$VolcarCampos
+  [switch]$VolcarCampos,
+  # SOLO LEER lo que Dorian ya tiene abierto, sin tocar su pantalla despues (15/09/2026). Se
+  # salta los tres pasos que mueven ventanas: cerrar un panel de cliente al arrancar, la foto
+  # (que abre y cierra el panel del cliente) y cerrar la interaccion al final. Esa interaccion
+  # la abrio el, no el sistema, y cerrarla puede pedir 'Descartar' sobre algo que no es nuestro
+  # (REGLAS.md 4.1). Implica -SinWord: una consulta suelta no va a ninguna base.
+  [switch]$SoloLeer,
+  # Leer SOLO estas lineas (numeros separados por coma) y volcar la ficha completa de cada una
+  # al progreso. Vacio = todas las lineas, lo de siempre.
+  [string]$Numeros = ""
 )
+if ($SoloLeer) { $SinWord = [switch]$true }
 $ErrorActionPreference='Stop'
 # NOTA: este archivo debe permanecer en ASCII puro.
 # PowerShell 5.1 lee .ps1 sin BOM como ANSI y rompe los acentos, lo que hacia
@@ -74,6 +89,7 @@ public static class Azul {
   const string L_DUR  = "Duraci\u00F3n del";  // "Duraci\u00F3n del Compromiso" = Plan Forzoso
   const string L_MOD  = "Modelo";
   const string L_MAR  = "Marca";
+  const string L_SIMEQ= "SIM y Equipos";
   const string MULT   = "m\u00FAltiples ";        // multiples
 
   [DllImport(D,CallingConvention=CallingConvention.Cdecl)] static extern void Windows_run();
@@ -90,6 +106,11 @@ public static class Azul {
   [DllImport("user32.dll")] static extern bool PeekMessage(out MSG m,IntPtr h,uint a,uint b,uint c);
   [DllImport("user32.dll")] static extern bool TranslateMessage(ref MSG m);
   [DllImport("user32.dll")] static extern IntPtr DispatchMessage(ref MSG m);
+  // Para encontrar los avisos que Azul abre FUERA de su ventana principal. Ver PulsarDescartar.
+  delegate bool EnumProc(IntPtr h,IntPtr p);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb,IntPtr p);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
   // Front() y RealClick() vivian aqui sin usarse, del enfoque viejo por capturas y clics.
   // Ahora que si hacen falta (para la banda de "Cliente:", que el puente no ve) se mudaron
   // a captura.ps1, que es donde vive todo lo que toca la maquina. Este archivo se queda
@@ -100,6 +121,9 @@ public static class Azul {
   }
 
   static int vm; static long root;
+  // La ventana principal, guardada en Init(). Solo se usa para saber de que proceso es, y asi
+  // poder mirar las demas ventanas de ESE Azul cuando se busca un aviso (ver PulsarDescartar).
+  static IntPtr hwndRaiz=IntPtr.Zero;
   static StringBuilder log=new StringBuilder();
   static void L(string s){ log.AppendLine(s); }
 
@@ -117,6 +141,10 @@ public static class Azul {
   // tener que adivinar. Solo imprime al progreso; no cambia ni una decision de lectura.
   public static bool VOLCAR=false;
   static bool volcado=false;
+  static bool volcadoEquipo=false;
+  // Numeros separados por coma. Si trae algo, SOLO se leen esas lineas y de cada una se vuelca
+  // la ficha entera al progreso. Para consultas sueltas de Dorian; vacio = todas, como siempre.
+  public static string SOLO_NUMS="";
   static void P(string s){
     try{ System.IO.File.AppendAllText(PROG, DateTime.Now.ToString("HH:mm:ss")+"  "+s+"\r\n"); }catch{}
   }
@@ -548,9 +576,29 @@ public static class Azul {
   //                 exige dejar constancia de lo que decia antes de tocarlo
   //   APAGADO       el boton esta ahi pero deshabilitado
   //   PULSADO / NOPULSO
-  public static string PulsarDescartar(){
+  // Las ventanas de primer nivel VISIBLES del mismo proceso que la principal, ella aparte.
+  // Un cuadro de aviso modal de Swing es una de estas: no cuelga del arbol de la ventana
+  // principal, asi que desde 'root' no se ve por mucho que se recorra.
+  static List<IntPtr> VentanasHermanas(){
+    var l=new List<IntPtr>();
+    if(hwndRaiz==IntPtr.Zero) return l;
+    uint mio; GetWindowThreadProcessId(hwndRaiz,out mio);
+    if(mio==0) return l;
+    EnumProc cb=delegate(IntPtr h,IntPtr p){
+      if(h!=hwndRaiz && IsWindowVisible(h)){
+        uint pid; GetWindowThreadProcessId(h,out pid);
+        if(pid==mio) l.Add(h);
+      }
+      return true;
+    };
+    EnumWindows(cb,IntPtr.Zero);
+    return l;
+  }
+
+  // El intento sobre UN arbol. Lo de fuera decide sobre cuantos arboles se intenta.
+  static string PulsarDesde(long raiz){
     long aviso; string camino;
-    long b=BuscaDescartar(root,0,"",0,out aviso,out camino);
+    long b=BuscaDescartar(raiz,0,"",0,out aviso,out camino);
     if(b==0) return "SINAVISO";
     if(aviso==0){ P("aviso al cerrar: hay boton 'Descartar' pero no dentro de un cuadro de aviso. Camino: "+camino); return "SINCUADRO:"+camino; }
     string txt=TextoAviso(aviso,0).Trim();
@@ -563,6 +611,32 @@ public static class Azul {
     if(!ok) return "NOPULSO";
     Pump(700);
     return "PULSADO";
+  }
+
+  // Primero la ventana principal, que es donde estaba mirando hasta el 17/09/2026. Si ahi no
+  // hay nada, las demas ventanas del MISMO Azul: Dorian viene viendo el aviso y pulsandolo a
+  // mano, y el registro no tenia ni una sola linea de "aviso al cerrar", lo que solo encaja
+  // con que el boton estuviera donde no se buscaba.
+  //
+  // Esto NO afloja ninguna de las condiciones de la regla 4.1: sigue sin pulsarse nada que no
+  // se llame exactamente 'Descartar', sigue exigiendose que viva dentro de un cuadro de aviso
+  // y sigue escribiendose el texto del cuadro antes de tocarlo. Lo unico que cambia es donde
+  // se busca. Y quien llama sigue siendo el mismo: el cierre de un marco que abrio nuestra
+  // propia navegacion, cuando la X no basto.
+  public static string PulsarDescartar(){
+    string r=PulsarDesde(root);
+    if(r!="SINAVISO") return r;
+    var vs=VentanasHermanas();
+    if(vs.Count==0) return "SINAVISO";
+    P("aviso al cerrar: en la ventana principal no hay 'Descartar'; se miran "+vs.Count+" ventana(s) mas del mismo Azul");
+    foreach(IntPtr h in vs){
+      int vm2; long r2;
+      if(!getAccessibleContextFromHWND(h,out vm2,out r2) || r2==0) continue;
+      if(vm2!=vm) continue;   // otra maquina virtual Java: sus manejadores no valen para esta
+      string s=PulsarDesde(r2);
+      if(s!="SINAVISO"){ P("aviso al cerrar: estaba en una ventana aparte, no en la principal"); return s; }
+    }
+    return "SINAVISO";
   }
 
   // Espera bombeando mensajes, no con Start-Sleep: el puente necesita que el hilo despache.
@@ -580,6 +654,7 @@ public static class Azul {
   // de la vista del cliente pueda usarse sola, sin releer todas las lineas de la cuenta.
   public static bool Init(IntPtr hwnd){
     Windows_run();
+    hwndRaiz=hwnd;
     // Sondeo por condicion, no espera por reloj: se pregunta por lo que de verdad hace falta,
     // que es que el puente conteste con el contexto raiz de la ventana.
     //
@@ -658,6 +733,7 @@ public static class Azul {
       string num=Cel(sub,r*SC+1);
       bool dig=num.Length>=6; foreach(char ch in num) if(!char.IsDigit(ch)) dig=false;
       if(!dig) continue;
+      if(SOLO_NUMS.Length>0 && (","+SOLO_NUMS+",").IndexOf(","+num+",")<0) continue;
       filasConNumero++;
       string el=(SC>7)?Cel(sub,r*SC+7):"";
       if(el.StartsWith("Cancel",StringComparison.OrdinalIgnoreCase)){ canceladas.Add(num); continue; }
@@ -811,7 +887,7 @@ public static class Azul {
             // Volcado de averiguacion, solo de la primera linea: la tabla de atributos entera,
             // campo por campo. Va aqui y no antes porque aqui ya se espero a que el arbol deje
             // de crecer, asi que lo que se vuelca es la tabla completa y no una a medio cargar.
-            if(VOLCAR && !volcado){
+            if((VOLCAR && !volcado) || SOLO_NUMS.Length>0){
               volcado=true;
               P("   ---- VOLCADO de campos del detalle: "+maxR+" filas x "+AC+" columnas ----");
               for(int r=0;r<maxR;r++){
@@ -848,9 +924,9 @@ public static class Azul {
 
             // dispositivo: Marca + Modelo, leidos tal cual. Es el respaldo, no el resultado:
             // "MOTOROLA XT2421-7" es el codigo del fabricante y no dice nada a quien vende.
-            string marca="", modelo="";
+            string marca="", modelo=""; int rMar=-1;
             for(int r=0;r<maxR;r++){
-              if(nm[r].StartsWith(L_MAR)){ string v=Txt(at,r*AC+2); if(v!="N/A"&&v.Length>0&&marca.Length==0) marca=v; }
+              if(nm[r].StartsWith(L_MAR)){ string v=Txt(at,r*AC+2); if(v!="N/A"&&v.Length>0&&marca.Length==0){ marca=v; rMar=r; } }
               else if(nm[r]==L_MOD){ string v=Txt(at,r*AC+2); if(v!="N/A"&&v.Length>0) modelo=v; }
             }
             disp=(marca+" "+modelo).Trim();
@@ -870,16 +946,58 @@ public static class Azul {
             //
             // Si no aparece, disp se queda con Marca + Modelo. Un telefono sin nombre de venta
             // en Azul -- o una linea que es solo SIM -- no es un error, es un dato que no esta.
+            string origenDisp="";   // "marca", "forma" o vacio si no se hallo: va al progreso
             if(marca.Length>0){
               for(int r=0;r<maxR;r++){
                 if(!nm[r].StartsWith(marca)) continue;
                 if(nm[r].Length<=marca.Length) continue;   // la fila es la marca sola, no el nombre
                 if(Txt(at,r*AC+2).Length>0) continue;      // trae valor: es un campo, no el equipo
                 if(AC>3 && Txt(at,r*AC+3).Length>0) continue;
-                disp=nm[r].Trim(); break;
+                disp=nm[r].Trim(); origenDisp="marca"; break;
+              }
+            }
+
+            // Respaldo por FORMA, 15/09/2026. Dorian vio que muchos iPhone salian como "APPLE
+            // A3295": el nombre de venta si esta en la columna de etiquetas, pero no empieza por
+            // la marca, y la regla de arriba lo exige. Tambien pasaba con HONOR y SAMSUNG.
+            //
+            // Aqui no se mira el texto sino la forma de la fila del equipo: sube desde "Marca
+            // (Fabricante)" y es la primera con la columna de valor vacia, escrita toda en
+            // mayusculas y con mas de una palabra. Los campos vacios que hay en medio
+            // ("EquiposOrderID", "Codigo de desbloqueo otorgado") llevan minusculas, y "SIM" es
+            // una sola palabra. No se sube mas alla de "SIM y Equipos", la seccion del equipo.
+            //
+            // La ULTIMA columna NO se exige vacia, a diferencia de la regla por marca. MEDIDO el
+            // 15/09/2026 con el volcado de un HONOR que salia "HONOR ALT-LX3": la fila del equipo
+            // era "HONOR X7C BDL EARBUDS X7I GREEN ATT" con "Precio de equipo" en la ultima
+            // columna, y exigirla vacia era justo lo que la tiraba. En el MOTOROLA del 11/09
+            // venia vacia; las dos formas caben aqui.
+            if(origenDisp.Length==0 && rMar>0){
+              for(int r=rMar-1;r>=0;r--){
+                string s3=nm[r].Trim();
+                if(s3==L_SIMEQ) break;
+                if(s3.IndexOf(' ')<0) continue;
+                if(s3!=s3.ToUpperInvariant()) continue;
+                bool letra=false; foreach(char ch in s3){ if(char.IsLetter(ch)){ letra=true; break; } }
+                if(!letra) continue;
+                if(Txt(at,r*AC+2).Length>0) continue;
+                disp=s3; origenDisp="forma"; break;
               }
             }
             if(disp.Length==0) disp="N/A";
+            if(origenDisp!="marca"){
+              P("   nombre del equipo: "+(origenDisp=="forma" ? "por forma, no empieza por la marca" : "NO hallado, queda Marca + Modelo")+" -> "+disp);
+              // Averiguacion: la seccion del equipo de la primera linea en que la marca no basto,
+              // con la columna 1, que el volcado general no ensena. Solo imprime.
+              if(VOLCAR && !volcadoEquipo && rMar>=0){
+                volcadoEquipo=true;
+                P("   ---- VOLCADO de la seccion del equipo: filas "+Math.Max(0,rMar-40)+" a "+Math.Min(maxR-1,rMar+1)+" ----");
+                for(int r=Math.Max(0,rMar-40);r<=Math.Min(maxR-1,rMar+1);r++){
+                  P("   ["+r+"]  "+nm[r]+"  |  "+(AC>1?Txt(at,r*AC+1):"")+"  |  "+(AC>2?Txt(at,r*AC+2):"")+"  |  "+(AC>3?Txt(at,r*AC+3):""));
+                }
+                P("   ---- fin del volcado ----");
+              }
+            }
 
             // Linea ACTIVA sin bloque Compromiso = SIM/eSIM sin contrato. No es una duda,
             // es un caso conocido y renovable. Se marca junto al numero para distinguirla,
@@ -1025,7 +1143,12 @@ function Resolver-AvisoDescartar {
     Write-Host "Azul pidio confirmacion al cerrar $Que y se pulso 'Descartar'."
     return $true
   }
-  if ($r -eq 'SINAVISO') { return $false }
+  # Antes esto se iba en silencio. Si la subventana no se cerro y ademas no hay ningun aviso a
+  # la vista, eso es justo lo que hay que poder leer despues en el registro, no un hueco.
+  if ($r -eq 'SINAVISO') {
+    [Azul]::Nota("aviso al cerrar ${Que}: no hay ningun boton 'Descartar' en ninguna ventana de Azul")
+    return $false
+  }
   Write-Host "AVISO: al cerrar $Que hay un aviso que NO se pulso ($r). Queda para revisar a mano."
   return $false
 }
@@ -1249,11 +1372,12 @@ try { $hwnd = Get-AzulHwnd } catch { "ERROR: $($_.Exception.Message)"; exit 1 }
 [Azul]::PAUSA_LINEAS  = $PausaLineas  * 1000
 [Azul]::PAUSA_LECTURA = $PausaLectura * 1000
 [Azul]::VOLCAR        = [bool]$VolcarCampos
+[Azul]::SOLO_NUMS     = (($Numeros -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }) -join ','
 
 # Init() aqui y no dentro de Run() porque cerrar el panel exige un clic real, y eso vive en
 # PowerShell. Run() vuelve a llamar a Init(), que es idempotente: cuesta un recacheo de panes.
 # Si Init falla, no se hace nada y se deja que Run() lo reporte como lo reportaba siempre.
-if ([Azul]::Init($hwnd)) { [void](Close-PanelClienteAbierto -Hwnd $hwnd) }
+if (-not $SoloLeer -and [Azul]::Init($hwnd)) { [void](Close-PanelClienteAbierto -Hwnd $hwnd) }
 
 $out = [Azul]::Run($hwnd)
 $csvPath = Join-Path $PSScriptRoot "azul_renovables.csv"
@@ -1264,8 +1388,58 @@ $out | Out-File -FilePath $csvPath -Encoding utf8
 # interaccion y deja la tabla de Suscripciones fuera del alcance del puente. Si se hiciera
 # primero y el regreso fallara, se perderia la corrida entera. Aqui, lo peor que pasa es
 # que falte la imagen, y el CSV ya esta en disco.
-$imagen = (Get-VistaCliente -Hwnd $hwnd -X $ClienteX -Y $ClienteY).Imagen
-if ($imagen -eq "") { Write-Host "       Las lineas SI se leyeron y estan en el CSV." }
+#
+# Y antes de eso: la foto solo sirve si el cliente va a entrar a la base. Abrir el panel del
+# cliente, esperar a que la pantalla se estabilice y volver a cerrarlo cuesta bastante, y en un
+# cliente sin nada que renovar ese gasto se tira. Se usa la MISMA regla que decide en lote.ps1
+# (0 renovables y 0 a revisar = no entra), para que las dos no se puedan separar.
+#
+# Ademas es una senal a simple vista para Dorian: si Azul abre el panel del cliente, ese
+# cliente va al documento. Si no lo abre, paso de largo.
+#
+# La foto se salta solo cuando los dos numeros se leyeron de verdad. Si el CSV quedo sin el
+# bloque -- corrida rota -- se hace lo de siempre: mejor una foto de mas que perder la prueba.
+$nRen = -1; $nRev = 0
+foreach ($ln in ($out -split "`r?`n")) {
+  if     ($ln -match '^#\s+RENOVABLES\s*\((\d+)\)') { $nRen = [int]$Matches[1] }
+  elseif ($ln -match '^#\s+A REVISAR\s*\((\d+)\)')  { $nRev = [int]$Matches[1] }
+}
+$valeLaFoto = -not ($nRen -eq 0 -and $nRev -eq 0)
+
+# Del centro de la lupita del telefono al punto donde se pica el enlace "Cliente:". Medido
+# dos veces con la barra en dos sitios distintos y salio igual: ver el comentario de -ClienteX.
+$ENLACE_DESDE_LUPA_X = 291
+$ENLACE_DESDE_LUPA_Y = 1
+
+$imagen = ""
+if (-not $SoloLeer) {
+  if ($valeLaFoto) {
+    # Donde picar el enlace "Cliente:" no se recuerda: se saca de donde esta HOY la lupita.
+    # Ver el comentario de -ClienteX. Con -ClienteX/-ClienteY a mano se pica ahi sin mirar.
+    $cx = $ClienteX; $cy = $ClienteY
+    if (-not ($cx -gt 0 -and $cy -gt 0)) {
+      $lupa = Find-IconoLupa -Hwnd $hwnd
+      if ($lupa.Ok) {
+        $cx = $lupa.X - $ENLACE_DESDE_LUPA_X
+        $cy = $lupa.Y - $ENLACE_DESDE_LUPA_Y
+        [Azul]::Nota("captura: lupita en ($($lupa.X),$($lupa.Y)), enlace Cliente en ($cx,$cy)")
+      } else {
+        $cx = 0; $cy = 0
+        [Azul]::Nota("captura: sin lupita no se sabe donde esta el enlace -- $($lupa.Por)")
+      }
+    }
+    if ($cx -gt 0 -and $cy -gt 0) {
+      $imagen = (Get-VistaCliente -Hwnd $hwnd -X $cx -Y $cy).Imagen
+    } else {
+      Write-Host "AVISO: no se encontro la lupita, asi que no se sabe donde esta el enlace del cliente."
+      Write-Host "       No se pica a ciegas: se deja el hueco de la foto."
+    }
+    if ($imagen -eq "") { Write-Host "       Las lineas SI se leyeron y estan en el CSV." }
+  } else {
+    [Azul]::Nota("captura: 0 renovables y 0 a revisar, no se fotografia; se cierra el cliente")
+    Write-Host "       Sin nada que renovar: no se toma foto, se cierra el cliente."
+  }
+}
 
 # ---- cerrar el marco de interaccion ----
 # REGLAS.md Ciclo 3, 09/09/2026: sin este cierre, "Inicio de Interaccion" queda listado en
@@ -1275,10 +1449,14 @@ if ($imagen -eq "") { Write-Host "       Las lineas SI se leyeron y estan en el 
 # aparte -- a diferencia del resto de este bloque, que ya esta probado -- porque es la
 # primera vez que este paso concreto corre contra Azul real.
 try {
-  $cerroInteraccion = Close-MarcoInteraccion -Hwnd $hwnd
-  if (-not $cerroInteraccion) {
-    Write-Host "AVISO: no se pudo cerrar 'Inicio de Interaccion'. El cliente puede seguir"
-    Write-Host "       cargado para el siguiente. Cierralo a mano con la X de su barra de titulo."
+  if ($SoloLeer) {
+    [Azul]::Nota("solo leer: la interaccion se deja abierta, es de Dorian")
+  } else {
+    $cerroInteraccion = Close-MarcoInteraccion -Hwnd $hwnd
+    if (-not $cerroInteraccion) {
+      Write-Host "AVISO: no se pudo cerrar 'Inicio de Interaccion'. El cliente puede seguir"
+      Write-Host "       cargado para el siguiente. Cierralo a mano con la X de su barra de titulo."
+    }
   }
 } catch {
   [Azul]::Nota("cierre interaccion: fallo - " + $_.Exception.Message)

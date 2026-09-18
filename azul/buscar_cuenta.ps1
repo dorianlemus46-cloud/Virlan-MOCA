@@ -11,13 +11,20 @@ param(
   # La lista de ordenes en CSV. Vacio = lista_ordenes.csv junto al script.
   [string]$Lista = "",
   # Donde esta el icono del telefono con lupa, relativo a la esquina de la ventana de Azul.
-  # Medido el 03/09/2026 con zoom.ps1 sobre la ventana en 1366x768. Va como parametro y no
-  # clavado porque ese icono es contenido de un navegador incrustado y el puente no lo ve, asi
-  # que no hay a quien preguntarle donde esta. Es una de las dos coordenadas medidas a mano
-  # del proyecto (REGLAS.md seccion 5); la otra, la del enlace "Cliente:", ya no la usa ningun
-  # script -- desde el 05/09/2026 ese clic lo da Dorian para su captura.
-  [int]$IconoX = 791,
-  [int]$IconoY = 121,
+  # En 0 -- lo normal -- NO se usa una posicion: se busca el icono en la ventana y se pica
+  # donde este de verdad. Ver Find-IconoLupa en captura.ps1.
+  #
+  # Hasta el 18/09/2026 aqui habia 791,121, medido a mano el 03/09/2026 con zoom.ps1 sobre
+  # la ventana en 1366x768, porque ese icono es contenido de un navegador incrustado y el
+  # puente de accesibilidad no lo ve. Funciono 220 clientes y despues fallo: la barra de
+  # Azul se corre a la derecha cuando el panel de la izquierda cambia de ancho, y el clic
+  # empezo a caer 55 pixeles antes del icono, en un campo vacio. Una posicion aprendida no
+  # sirve para algo que se mueve.
+  #
+  # Se dejan como parametro para poder forzar la posicion a mano si algun dia el dibujo del
+  # icono cambia y dejara de reconocerse. Con los dos mayores que 0 se pica ahi sin mirar.
+  [int]$IconoX = 0,
+  [int]$IconoY = 0,
   # No hacer clic: exige que el formulario ya este abierto. Para correr sin tocar el mouse.
   [switch]$SinClic,
   # Levantar Azul si esta minimizado, en vez de negarse. Apagado por defecto: la guarda de
@@ -35,9 +42,16 @@ param(
   # Buscar aunque haya criterios viejos en otros campos del formulario.
   [switch]$Forzar,
   # Pausas ADICIONALES para no pedirle datos a Azul mas rapido de lo que aguanta una persona
-  # (Dorian, 07/09/2026). Se SUMAN a las esperas que ya habia; ninguna las sustituye. En segundos.
+  # (Dorian, 07/09/2026). En segundos.
+  #
+  # -PausaEscribir sigue siendo una espera clavada: se para esos segundos entre escribir el
+  # numero y pulsar "Buscar Ahora".
+  #
+  # -PausaResultado ya NO se gasta esperando. Desde el 18/09/2026 es cuanto se ALARGA el
+  # plazo que se le da a Azul para traer el resultado, y se sale en cuanto lo trae. Antes
+  # eran diez segundos parado antes de mirar siquiera, y era donde mas tiempo se iba.
   [int]$PausaEscribir = 5,   # entre escribir el numero de cuenta y pulsar "Buscar Ahora"
-  [int]$PausaResultado = 10  # entre pulsar "Buscar Ahora" y empezar a leer el resultado
+  [int]$PausaResultado = 10  # segundos de mas en el plazo para reconocer el resultado
 )
 $ErrorActionPreference = 'Stop'
 # NOTA: este archivo debe permanecer en ASCII puro, igual que azul_fast.ps1.
@@ -473,11 +487,23 @@ public static class Busca {
   // El marco de interaccion, que es lo que Azul abre cuando ENCUENTRA al cliente. Su nombre
   // trae el numero de interaccion, que cambia en cada busqueda: por eso sirve para distinguir
   // "cargo este cliente ahora" de "ya habia uno cargado de antes".
+  //
+  // Un marco recien nacido se llama todavia "Inicio de Interaccion [%]": Siebel pinta el
+  // titulo con su plantilla sin rellenar y pone el numero un momento despues. Ese marco NO
+  // cuenta como cliente cargado -- es el cartel, no el cliente. Mientras el 10/09/2026 hubo
+  // diez segundos de espera clavada antes de mirar, la plantilla nunca se llegaba a ver y
+  // esto no se noto; el 18/09/2026, quitada esa espera, la primera busqueda devolvio "[%]",
+  // el tramo de 20 s para abrir 'Suscripciones' arranco con Azul todavia montando la vista y
+  // se agoto. Se descarta por el hueco sin rellenar y no por la falta del numero, que es lo
+  // que de verdad distingue la plantilla de un nombre bueno.
   public static string Interaccion(){
-    long f=First(root,(i,ac)=> i.role_en_US=="internal frame" && i.name!=null && i.name.StartsWith(F_INT));
+    long f=First(root,(i,ac)=> i.role_en_US=="internal frame" && i.name!=null
+                               && i.name.StartsWith(F_INT) && i.name.IndexOf('%')<0);
     if(f==0) return "";
     ACI2 fi; if(!Inf(f,out fi)) return "";
-    return fi.name==null?"":fi.name.Trim();
+    if(fi.name==null) return "";
+    string n=fi.name.Trim();
+    return n.IndexOf('%')>=0 ? "" : n;
   }
 
   // Todo lo que hay abierto. Si Azul contesto con un aviso en vez de con resultados, aqui se
@@ -530,6 +556,64 @@ public static class Busca {
       if(f==prev){ iguales++; if(iguales>=2) break; } else { iguales=0; prev=f; }
     }
     return "OK|"+f;
+  }
+
+  // ---- esperar POR RECONOCIMIENTO, no por reloj ----------------------------
+  // Despues de 'Buscar Ahora' Azul hace una de dos cosas, y las dos se ven en cuanto pasan:
+  // o carga al cliente y abre su marco de interaccion, o abre la rejilla para que se elija
+  // cuenta. EsperarResultado no miraba ninguna de las dos: miraba una firma de pantalla, y
+  // encima esperaba a que esa firma dejara de moverse. Eso son varios segundos DESPUES de que
+  // en pantalla ya esta lo que hace falta -- que es lo que se veia como "piensa demasiado".
+  //
+  //   CARGADO|<marco>   el marco de interaccion aparecio y no es el que ya habia
+  //   REJILLA|<fila 1>  la rejilla ya tiene primera fila con datos y 'Seleccionar' en pantalla
+  //   NADA|             todavia no se sabe
+  public static string Desenlace(string interAntes){
+    string r=EsperarInteraccion(interAntes,0);
+    if(r.StartsWith("CARGADO|")) return r;
+    long res=MarcoResultados(); if(res==0) return "NADA|";
+    long t=TablaDe(res); if(t==0) return "NADA|";
+    ATI2 ti; if(!getAccessibleTableInfo(vm,t,out ti)) return "NADA|";
+    if(ti.rowCount<1 || ti.columnCount<1) return "NADA|";
+    // Sin el boton no hay nada que pulsar todavia: la rejilla esta a medio montar.
+    long b=First(res,(i,ac)=> i.role_en_US=="push button" && i.name!=null && i.name.Trim()==B_SELEC);
+    if(b==0) return "NADA|";
+    var sb=new StringBuilder();
+    for(int c=0;c<ti.columnCount;c++){ sb.Append(Cel(t,c)); sb.Append(" "); }
+    string fila0=sb.ToString().Trim();
+    if(fila0.Length==0) return "NADA|";   // rejilla vacia de Siebel: fila en blanco, no resultado
+    return "REJILLA|"+fila0;
+  }
+
+  // Solo el marco de interaccion. Es lo que se espera despues de 'Seleccionar', donde la
+  // rejilla ya no es un desenlace sino lo que se acaba de dejar atras. Con seg=0 es una
+  // mirada suelta, sin espera.
+  public static string EsperarInteraccion(string interAntes,int seg){
+    DateTime tope=DateTime.Now.AddSeconds(seg);
+    while(true){
+      string inter=Interaccion();
+      if(inter.Length>0 && inter!=interAntes) return "CARGADO|"+inter;
+      if(DateTime.Now>=tope) return "NADA|";
+      Pump(200);
+    }
+  }
+
+  // La primera fila se exige LEIDA DOS VECES IGUAL. Siebel pinta la rejilla mientras la llena,
+  // y sobre esa misma fila se comprueba despues la razon social del Excel: leerla a medias
+  // haria fallar la comprobacion en un cliente bueno. Son 200 ms, no los segundos de antes.
+  public static string EsperarDesenlace(string interAntes,int seg){
+    DateTime tope=DateTime.Now.AddSeconds(seg);
+    string previo="";
+    while(true){
+      string d=Desenlace(interAntes);
+      if(d.StartsWith("CARGADO|")) return d;
+      if(d.StartsWith("REJILLA|")){
+        if(d==previo) return d;
+        previo=d;
+      } else previo="";
+      if(DateTime.Now>=tope) return "NADA|";
+      Pump(200);
+    }
   }
 
   // Lo que trajo la busqueda, para poder pararse aqui sabiendo que se trajo.
@@ -658,6 +742,29 @@ public static class Busca {
     if(t==0) return false;
     ACI2 ti; if(!Inf(t,out ti)) return false;
     return Est(ti,"selected");
+  }
+  // Espera a que la pestana exista Y SE ESTE QUIETA, no a que este seleccionada. Hace falta desde
+  // que la espera de la busqueda dejo de ser por reloj: ahora se llega aqui en cuanto aparece el
+  // marco de interaccion, y eso puede ser antes de que sus pestanas esten colocadas.
+  //
+  // Lo de "quieta" no es adorno. El 17/09/2026, con Azul de verdad, CLIENTE EJEMPLO DOS y
+  // CLIENTE EJEMPLO TRES murieron los dos igual: la pestana existia ya, pero estaba en
+  // x=826 y un instante despues se fue a x=895. El clic salio a la posicion vieja, cayo en otro
+  // sitio y 'Suscripciones' no llego a seleccionarse nunca. Leer la geometria dos veces seguidas
+  // y exigir que de lo mismo cuesta 300 ms y cierra ese agujero; ademas evita pulsar a ciegas
+  // donde ni siquiera se sabe que hay.
+  public static bool EsperarPestanaExiste(string nombre,int seg){
+    DateTime tope=DateTime.Now.AddSeconds(seg);
+    string previo="";
+    while(true){
+      string g=GeoPestana(nombre);
+      if(g.StartsWith("OK|")){
+        if(g==previo) return true;
+        previo=g;
+      } else previo="";
+      if(DateTime.Now>=tope) return false;
+      Pump(300);
+    }
   }
   public static bool EsperarPestana(string nombre,int seg){
     DateTime tope=DateTime.Now.AddSeconds(seg);
@@ -802,7 +909,6 @@ function Invoke-Buscar { Invoke-ClicGeo -Geometria { [Busca]::GeoBotonBuscar() }
 # de resultados abierta Azul IGNORA el clic en el icono del telefono.
 if ($DesdeResultados) {
   $interAntes = [Busca]::Interaccion()
-  $estado = "OK"
 } else {
   # ---- 1. abrir el formulario -------------------------------------------------
   if ([Busca]::HayCIM()) {
@@ -810,12 +916,30 @@ if ($DesdeResultados) {
   } elseif ($SinClic) {
     "ERROR: el formulario no esta abierto y se pidio -SinClic."; exit 1
   } else {
-    "Clic real en el icono del telefono con lupa ($IconoX,$IconoY)..."
-    [Busca]::Nota("buscar: clic en el icono en ($IconoX,$IconoY)")
-    [void](Invoke-AzulClick -Hwnd $hwnd -X $IconoX -Y $IconoY)
+    # Donde picar no se recuerda: se mira. Ver Find-IconoLupa en captura.ps1 y el porque
+    # en el comentario de -IconoX. Con -IconoX/-IconoY a mano se pica ahi sin mirar, que
+    # es la salida de emergencia por si algun dia el dibujo del icono cambia.
+    if ($IconoX -gt 0 -and $IconoY -gt 0) {
+      $ix = $IconoX; $iy = $IconoY
+      "Clic real en el icono del telefono con lupa ($ix,$iy), posicion forzada a mano."
+      [Busca]::Nota("buscar: clic forzado en el icono en ($ix,$iy)")
+    } else {
+      $lupa = Find-IconoLupa -Hwnd $hwnd
+      if (-not $lupa.Ok) {
+        "ERROR: no se encontro el icono del telefono con lupa en la ventana de Azul."
+        "       $($lupa.Por)"
+        "       No se pica a ciegas: en esa barra los vecinos abren otras cosas."
+        [Busca]::Nota("buscar: icono no encontrado -- $($lupa.Por)")
+        exit 1
+      }
+      $ix = $lupa.X; $iy = $lupa.Y
+      "Icono del telefono con lupa encontrado en $ix,$iy  ($($lupa.Detalle))."
+      [Busca]::Nota("buscar: icono encontrado en ($ix,$iy), $($lupa.Detalle)")
+    }
+    [void](Invoke-AzulClick -Hwnd $hwnd -X $ix -Y $iy)
     if (-not [Busca]::EsperarCIM(40)) {
       "ERROR: el formulario 'Encontrar Comunicante Busqueda CIM' no abrio en 40 s."
-      "       O el clic no dio en el icono, o Azul no respondio. No se busco nada."
+      "       El clic dio en $ix,$iy. O Azul no respondio, o el icono no era ese."
       exit 1
     }
     "Formulario abierto."
@@ -941,51 +1065,54 @@ if ($DesdeResultados) {
   if ($r -like 'ERROR*') { $r; exit 1 }
   "'Buscar Ahora' pulsado con clic real en $(($r -split '\|')[1])."
 
-  # Pausa ADICIONAL entre pulsar "Buscar Ahora" y empezar a leer el resultado (Dorian,
-  # 07/09/2026). Va ANTES de la sonda de abajo, no en vez de: le da a Azul un respiro antes
-  # de que el script empiece a preguntarle si ya termino.
-  Start-Sleep -Seconds $PausaResultado
+
+  # Aqui habia un Start-Sleep -Seconds $PausaResultado: diez segundos clavados antes de
+  # mirar siquiera, se hubiera enterado Azul o no. Tenia sentido cuando el resultado se
+  # reconocia por una firma de pantalla; desde que existe EsperarDesenlace ya no, porque esa
+  # sonda no vuelve por un cambio cualquiera sino solo cuando reconoce el marco de
+  # interaccion, o una rejilla con su primera fila leida dos veces igual. Era el tramo donde
+  # mas tiempo se iba (Dorian, 18/09/2026: "tarda 20 segundos, es donde mas se va el tiempo").
+  #
+  # Queda un respiro corto, para no preguntarle a Azul en el mismo instante del clic. Y los
+  # segundos de -PausaResultado no se pierden: se SUMAN al presupuesto de la sonda. En el
+  # peor caso se aguanta lo mismo que antes; en el normal se sale en cuanto hay resultado.
+  Start-Sleep -Milliseconds 700
 
   # Un reintento, y solo si el formulario SIGUE abierto: eso prueba que el clic no llego al
   # boton. A diferencia de la pulsacion por el puente, un clic fallido no consume el formulario,
   # asi que reintentar es seguro y no deja una corrida ambigua.
-  $r = [Busca]::EsperarResultado($antes, 15)
-  if ((($r -split '\|')[0]) -eq 'TIEMPO' -and [Busca]::HayCIM()) {
+  $r = [Busca]::EsperarDesenlace($interAntes, 15 + $PausaResultado)
+  if ((($r -split '\|')[0]) -eq 'NADA' -and [Busca]::HayCIM()) {
     "Nada cambio y el formulario sigue abierto: el clic no dio en el boton. Un reintento."
     $r2 = Invoke-Buscar
     if ($r2 -like 'ERROR*') { $r2; exit 1 }
     "'Buscar Ahora' pulsado de nuevo en $(($r2 -split '\|')[1])."
   }
 
-  # ESTA SEGUNDA ESPERA NO SE CONDICIONA. Parece que repite la de arriba y NO lo hace.
+  # LA ESPERA DE VERDAD: hasta minuto y medio para que Azul traiga algo. Solo se entra si la
+  # sonda de arriba no reconocio nada todavia.
   #
-  # Se intento el 04/09/2026 -- "solo lanzarla si la de 15 s devolvio TIEMPO" -- y rompio la
-  # busqueda: CLIENTE EJEMPLO UNO, que la vez anterior habia cargado bien, volvio SIN RESULTADO.
+  # Antes esto NO se podia condicionar, y hay un aviso viejo en este mismo sitio que lo explica:
+  # con EsperarResultado, la sonda de 15 s devolvia "OK" en cuanto la firma de pantalla cambiaba,
+  # y el formulario cerrandose YA la cambiaba -- asi que "OK" no significaba que Azul hubiera
+  # traido nada. Condicionar sobre eso dejaba el presupuesto real en 15 s y los clientes lentos
+  # salian como "no encontrado" (paso el 04/09/2026 con CLIENTE EJEMPLO UNO).
   #
-  # El motivo esta dentro de EsperarResultado: sus DOS bucles, el que detecta el cambio y el
-  # que espera a que la firma se estabilice, comparten el MISMO 'tope'. Con seg=15, detectar y
-  # estabilizar tienen que caber juntos en 15 s; y si el plazo se agota estabilizando, la
-  # funcion devuelve "OK" igualmente, sin haber estabilizado nada.
-  #
-  # Asi que las dos llamadas hacen cosas distintas:
-  #   - la de 15 s es una SONDA rapida, solo para decidir si hay que repetir el clic
-  #   - la de 90 s es LA ESPERA DE VERDAD, la que le da a Azul hasta minuto y medio para
-  #     cargar al cliente y abrir el marco de interaccion
-  #
-  # Condicionarla deja el presupuesto real en 15 s, y todo cliente que tarde mas se reporta
-  # como "no encontrado". Ojo: que el formulario se cierre YA cambia la firma, asi que la
-  # sonda de 15 s devuelve OK enseguida sin que Azul haya traido nada todavia. Es la misma
-  # trampa que avisa el comentario de F_INT: el formulario se cierra igual cuando no encuentra.
-  $r = [Busca]::EsperarResultado($antes, 90)
-  $estado = ($r -split '\|')[0]
-  $fin    = ($r -split '\|')[1]
-  "Despues: $fin"
+  # Con EsperarDesenlace esa trampa desaparece: no vuelve por un cambio de pantalla cualquiera,
+  # sino solo cuando reconoce el marco de interaccion o una rejilla con primera fila. 'NADA' es
+  # de verdad "todavia no hay nada", asi que seguir esperando es lo correcto, y volver antes
+  # cuando si hay algo es justo lo que se busca.
+  if ((($r -split '\|')[0]) -eq 'NADA') { $r = [Busca]::EsperarDesenlace($interAntes, 90) }
+  $desenlace = ($r -split '\|')[0]
+  "Despues: $desenlace $((($r -split '\|', 2)[1]).Trim())"
   ""
-  
-  if ($estado -eq 'TIEMPO') {
-    "ERROR: 90 s y nada cambio en Azul."
-    "       O el clic no dio en 'Buscar Ahora', o Azul no respondio. No se busco nada."
-    exit 1
+
+  # Con 'NADA' NO se sale aqui. Se deja caer a las guardas de abajo, que miran el marco y las
+  # filas y saben decir cual de los tres desenlaces malos es (marco heredado del cliente
+  # anterior, sin resultado, o rejilla a medias). Un ERROR generico en este punto se llevaria
+  # por delante esos mensajes, que son los que dicen que hacer.
+  if ($desenlace -eq 'NADA') {
+    "AVISO: se agoto el plazo sin reconocer ni marco de interaccion nuevo ni rejilla."
   }
 
   # Marca de medicion. Aisla el costo del bloque de busqueda -- que es donde viven las
@@ -1106,19 +1233,20 @@ if ($cargado) {
       "       La guarda contra entrar al cliente equivocado NO se aplica en esta corrida."
     }
 
-    $antesSel = [Busca]::Firma()
     $c = Invoke-ClicGeo -Geometria { [Busca]::GeoBotonResultados('Seleccionar') } -Que "'Seleccionar'"
     if ($c -like 'ERROR*') { $c; exit 1 }
     "'Seleccionar' pulsado con clic real en $(($c -split '\|')[1])."
 
-    $e = [Busca]::EsperarResultado($antesSel, 90)
-    "Despues:  $(($e -split '\|')[1])"
-    if ((($e -split '\|')[0]) -eq 'TIEMPO') {
-      "ERROR: 90 s tras 'Seleccionar' y nada cambio."
+    # Aqui lo unico que se espera es el marco de interaccion. La rejilla ya no es un desenlace:
+    # es lo que se acaba de dejar atras, y esperar a que la pantalla entera se asiente era pagar
+    # segundos por una senal que no dice nada mas que esta.
+    $e = [Busca]::EsperarInteraccion($interAntes, 90)
+    if ((($e -split '\|')[0]) -eq 'NADA') {
+      "ERROR: 90 s tras 'Seleccionar' y no aparecio ningun marco de interaccion nuevo."
       "Captura: $(Save-Prueba -Etiqueta 'seleccionar_sin_efecto')"
       exit 1
     }
-    $interDespues = [Busca]::Interaccion()
+    $interDespues = (($e -split '\|', 2)[1])
     $cargado = ($interDespues -ne "" -and $interDespues -ne $interAntes)
         if ($cargado) { "CLIENTE CARGADO: $interDespues" }
     else { "AVISO: se pulso 'Seleccionar' pero no aparecio marco de interaccion nuevo." }
@@ -1169,9 +1297,21 @@ function Test-TramoVencido { (Get-Date) -ge $topeTramo }
 function Get-TramoRestanteSeg { [Math]::Max(0, [int][Math]::Ceiling(($topeTramo - (Get-Date)).TotalSeconds)) }
 
 ""
+# Ahora se llega aqui EN CUANTO Azul abre el marco de interaccion, que puede ser un pelo antes
+# de que sus pestanas esten colocadas. Se espera a que la pestana exista y ADEMAS este quieta:
+# pulsarla mientras la tira de pestanas todavia se mueve manda el clic a la posicion vieja.
+if (-not [Busca]::EsperarPestanaExiste('Suscripciones', (Get-TramoRestanteSeg))) {
+  "ERROR: la pestana 'Suscripciones' no llego a quedarse quieta dentro del tope de tramo de $TRAMO_SEG s."
+  "Captura: $(Save-Prueba -Etiqueta 'pestana_sin_aparecer')"
+  [Busca]::Nota("tramo busqueda->Suscripciones: EXCEDIDO tope de $TRAMO_SEG s (la pestana no aparecio)")
+  exit 1
+}
 if ([Busca]::PestanaSeleccionada('Suscripciones')) {
   "La pestana 'Suscripciones' ya estaba abierta."
 } else {
+  # Donde estaba la pestana justo antes de pulsarla, para poder comparar si el clic no surte
+  # efecto: si despues esta en otro sitio, es que se movio y el clic salio a la posicion vieja.
+  $geoAntes = [Busca]::GeoPestana('Suscripciones')
   $c = Invoke-ClicGeo -Geometria { [Busca]::GeoPestana('Suscripciones') } -Que "la pestana 'Suscripciones'"
   if ($c -like 'ERROR*') { $c; exit 1 }
   "Pestana 'Suscripciones' pulsada con clic real en $(($c -split '\|')[1])."
@@ -1180,11 +1320,23 @@ if ([Busca]::PestanaSeleccionada('Suscripciones')) {
   # pide un "40" fijo aqui: ese tope propio de EsperarPestana() sigue existiendo tal cual en
   # su codigo, pero en este punto del archivo el tramo es siempre el mas corto de
   # los dos, asi que es el que manda.
-  if (-not [Busca]::EsperarPestana('Suscripciones', (Get-TramoRestanteSeg))) {
-    "ERROR: la pestana 'Suscripciones' no quedo seleccionada dentro del tope de tramo de $TRAMO_SEG s."
-    "Captura: $(Save-Prueba -Etiqueta 'pestana_sin_efecto')"
-    [Busca]::Nota("tramo busqueda->Suscripciones: EXCEDIDO tope de $TRAMO_SEG s (pestana)")
-    exit 1
+  if (-not [Busca]::EsperarPestana('Suscripciones', [Math]::Min(6, (Get-TramoRestanteSeg)))) {
+    # Un solo reintento, y SOLO si la pestana se ha movido desde donde se pulso: eso prueba que
+    # el clic salio a la posicion vieja. Si no se ha movido, el clic llego bien y el problema es
+    # otro, asi que no se vuelve a pulsar. La geometria se relee, de modo que el segundo clic va
+    # otra vez a 'Suscripciones' y a ningun otro sitio.
+    $geoAhora = [Busca]::GeoPestana('Suscripciones')
+    if ($geoAhora -like 'OK|*' -and $geoAhora -ne $geoAntes) {
+      "La pestana se habia movido de $(($geoAntes -split '\|')[1]) a $(($geoAhora -split '\|')[1]); se vuelve a pulsar."
+      $c2 = Invoke-ClicGeo -Geometria { [Busca]::GeoPestana('Suscripciones') } -Que "la pestana 'Suscripciones' (reintento)"
+      if ($c2 -like 'OK|*') { "Reintento pulsado en $(($c2 -split '\|')[1])." }
+    }
+    if (-not [Busca]::EsperarPestana('Suscripciones', (Get-TramoRestanteSeg))) {
+      "ERROR: la pestana 'Suscripciones' no quedo seleccionada dentro del tope de tramo de $TRAMO_SEG s."
+      "Captura: $(Save-Prueba -Etiqueta 'pestana_sin_efecto')"
+      [Busca]::Nota("tramo busqueda->Suscripciones: EXCEDIDO tope de $TRAMO_SEG s (pestana)")
+      exit 1
+    }
   }
 }
 
