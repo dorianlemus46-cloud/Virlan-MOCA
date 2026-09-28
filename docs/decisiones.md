@@ -131,6 +131,25 @@ suya.*
 
 ---
 
+## Por qué las SIM sin contrato ya no entran a las bases
+
+**Cambiado: 28/09/2026, por Dorian:** *"Olvida las sim, ya no las incluyas."*
+
+**Antes:** la línea activa sin nodo `Compromiso` (SIM/eSIM sin contrato) iba a
+**RENOVABLE**, marcada `(SIM)` (ver la sección anterior).
+
+**Ahora:** sigue reconociéndose igual, pero va a su propio bloque del CSV,
+`# SIM EXCLUIDAS (n)`, y **no se escribe en Word**. No cuenta como renovable: un cliente
+cuyas únicas renovables eran SIM queda como `SIN RENOVABLES` y no entra a la base. El
+bloque se queda en el CSV porque esas líneas sí se leyeron y forman parte de las activas
+del cuadre. Las demás causas de REVISAR no cambian.
+
+> ⚠ **Escrito y verificado sin Azul delante:** el C# compila y el filtro de
+> `agregar_a_word.ps1` y `revisar_csv.ps1` se probó con un CSV de prueba. Todavía no ha
+> pasado por una corrida real que traiga una SIM.
+
+---
+
 ## Por qué las líneas `Suspendida` se tratan igual que `Activa`
 
 **Decidido: 09/09/2026, por Dorian.**

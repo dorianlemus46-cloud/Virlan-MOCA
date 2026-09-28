@@ -745,6 +745,7 @@ public static class Azul {
     // siendo renovable; a los 10 ya no. Decision del usuario, 02/09/2026.
     DateTime hoy=DateTime.Today, lim=hoy.AddMonths(3), tol=lim.AddDays(10), unAnio=hoy.AddYears(1);
     var filasSi=new List<string>(); var filasNo=new List<string>(); var filasRev=new List<string>();
+    var filasSim=new List<string>();
     int ySi=0,zNo=0,wRev=0,sinForz=0;
     bool abortado=false;
     bool primeraSeleccion=true;
@@ -1000,9 +1001,11 @@ public static class Azul {
             }
 
             // Linea ACTIVA sin bloque Compromiso = SIM/eSIM sin contrato. No es una duda,
-            // es un caso conocido y renovable. Se marca junto al numero para distinguirla,
-            // sin agregar columna. Ojo: esto NO relaja las demas causas de REVISAR.
-            if(rComp<0){ est="SI"; esSim=true; nota="SIM/eSIM sin contrato"; CerrarDetalle(); goto finIntento; }
+            // es un caso conocido. Hasta el 28/09/2026 contaba como renovable; desde ese dia
+            // Dorian no las quiere en las bases: van a su propio bloque, SIM EXCLUIDAS, que
+            // queda en el CSV para el cuadre y NO se escribe en Word. Ojo: esto NO relaja las
+            // demas causas de REVISAR.
+            if(rComp<0){ est="SIM"; esSim=true; nota="SIM/eSIM sin contrato"; CerrarDetalle(); goto finIntento; }
 
             // ---- contencion: MPE y Fecha Final DENTRO del bloque Compromiso ----
             int fin=rComp+12;
@@ -1081,6 +1084,7 @@ public static class Azul {
         if(forz.Length==0 && est!="REVISAR" && !esSim) sinForz++;
         if(est=="SI"){ ySi++; filasSi.Add(fila); }
         else if(est=="NO"){ zNo++; filasNo.Add(fila); }
+        else if(est=="SIM"){ filasSim.Add(fila); }
         else { wRev++; filasRev.Add(fila); }
         if(abortado){
           for(int m=n+1;m<rows.Count;m++){
@@ -1110,9 +1114,15 @@ public static class Azul {
     // las lea igual que los otros bloques, sin un formato aparte que mantener
     L("# CANCELADAS EXCLUIDAS ("+canceladas.Count+")");
     foreach(string s in canceladas) L(Csv(s)+",\"\",\"\",\"\",\"\",\"\"");
+    // Las SIM sin contrato se leen (cuentan en las activas del cuadre) pero no van a la base.
+    // agregar_a_word.ps1 se salta este bloque.
+    if(filasSim.Count>0){
+      L("# SIM EXCLUIDAS ("+filasSim.Count+")");
+      foreach(string s in filasSim) L(s);
+    }
     L("#");
     L("# CUADRE: "+rows.Count+" activas leidas + "+canceladas.Count+" canceladas excluidas = "+filasConNumero+" filas de la tabla");
-    L("# "+ySi+" renovables, "+zNo+" no renovables, "+wRev+" a revisar"+(sinForz>0?("  ("+sinForz+" sin Plan Forzoso legible)"):""));
+    L("# "+ySi+" renovables, "+zNo+" no renovables, "+wRev+" a revisar"+(filasSim.Count>0?(", "+filasSim.Count+" SIM excluidas"):"")+(sinForz>0?("  ("+sinForz+" sin Plan Forzoso legible)"):""));
     L("# renovable = vence antes del "+tol.ToString("dd/MM/yyyy")+" = ventana al "+lim.ToString("dd/MM/yyyy")+" + 10 dias de tolerancia, sin limite hacia atras");
     L("# corrida "+hoy.ToString("dd/MM/yyyy")+", "+(sw.ElapsedMilliseconds/1000.0).ToString("0.0")+" s, "+jab+" llamadas JAB");
     P("JAB total de la lectura: "+jab);

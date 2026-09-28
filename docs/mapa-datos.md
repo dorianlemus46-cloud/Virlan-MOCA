@@ -160,8 +160,9 @@ datos de una línea a otra.
 
 ### Casos borde
 
-- **Sin nodo `Compromiso`** → SIM/eSIM sin contrato. Es **RENOVABLE**, se marca
-  `(SIM)` junto al número (ver `docs/decisiones.md`).
+- **Sin nodo `Compromiso`** → SIM/eSIM sin contrato. Desde el 28/09/2026 **no entra a
+  la base**: va al bloque `# SIM EXCLUIDAS` del CSV, que no se escribe en Word (ver
+  `docs/decisiones.md`).
 - **`Marca`/`Modelo` = `N/A`** → equipo del cliente, sin registrar. `SIM y Equipos`
   dice `desconocido`.
 - **Líneas `Cancelado`** suelen venir sin plan. No se les abre el detalle.
@@ -283,7 +284,7 @@ Siendo `fin` = `Fecha Final del Compromiso`:
 | `fin` ya pasó, sin importar cuánto hace | **RENOVABLE** |
 | `fin` **antes de** `hoy + 3 meses + 10 días` | **RENOVABLE** |
 | `fin` **en o después de** `hoy + 3 meses + 10 días` | **NO RENOVABLE** (tabla aparte, no se omite) |
-| Sin nodo `Compromiso` | **RENOVABLE** — SIM/eSIM sin contrato, se marca `(SIM)` |
+| Sin nodo `Compromiso` | **SIM EXCLUIDA** — SIM/eSIM sin contrato; no va a Word (28/09/2026) |
 
 **`Suspendida` se trata igual que `Activa`** (Dorian, 09/09/2026): sigue exactamente la
 misma tabla de arriba (fecha, tolerancia, sin nodo `Compromiso`), y se marca `(Suspendida)`

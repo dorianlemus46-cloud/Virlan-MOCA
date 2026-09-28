@@ -84,6 +84,9 @@ foreach ($ln in $todo) {
   }
 }
 if ($bloques.Count -eq 0) { throw "El CSV no trae bloques '# NOMBRE (n)'. Corre azul_fast.ps1 de nuevo." }
+# Las SIM sin contrato no van a la base desde el 28/09/2026 (Dorian). El bloque queda en el
+# CSV para el cuadre, pero aqui se descarta antes de escribir nada.
+$bloques = @($bloques | Where-Object { $_.Titulo -ne 'SIM EXCLUIDAS' })
 
 $cuadre = $todo | Where-Object { $_ -match '^#\s*CUADRE:' } | Select-Object -First 1
 if ($cuadre) { $cuadre = ($cuadre -replace '^#\s*','') }
