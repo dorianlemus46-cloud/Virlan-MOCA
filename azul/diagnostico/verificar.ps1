@@ -11,12 +11,13 @@ $ErrorActionPreference = 'Stop'
 
 $raiz = Split-Path $PSScriptRoot -Parent
 $archivos = @('azul_fast.ps1', 'agregar_a_word.ps1', 'captura.ps1', 'buscar_cuenta.ps1',
-              'revisar_csv.ps1', 'lote.ps1', 'lista.ps1', 'bases.ps1')
+              'revisar_csv.ps1', 'lote.ps1', 'lista.ps1', 'bases.ps1', 'cliente.ps1')
 # Los diagnosticos no corren en produccion, pero se rompen por lo mismo: acentos que
 # PowerShell 5.1 lee como ANSI, y errores de sintaxis que no aparecen hasta ejecutarlos.
 $diagnosticos = @('diagnostico\jab_cliente.ps1', 'diagnostico\zoom.ps1', 'diagnostico\excel_ordenes.ps1',
                   'diagnostico\probar_captura.ps1', 'diagnostico\probar_word.ps1',
-                  'diagnostico\probar_lista.ps1', 'diagnostico\probar_bases.ps1')
+                  'diagnostico\probar_lista.ps1', 'diagnostico\probar_bases.ps1',
+                  'diagnostico\medir_proceso.ps1')
 $fallos = 0
 
 "--- ASCII puro ---"

@@ -45,12 +45,16 @@
 #        escritorio tenia un hueco ahi.
 #   PS2  la abrio Dorian el 18/09/2026, empezando en el 071, pidiendo expresamente que la PS1
 #        siguiera donde iba (050).
+#   PS3  la abrio Dorian el 29/09/2026, empezando en el 001. BASE 034 PS1 VIRLAN.docx (2
+#        clientes) se adopto como su primer documento, BASE 001 PS3 VIRLAN.docx; el archivo
+#        viejo de la PS1 se borro despues de comprobar la copia.
 #
 # El primer numero solo se usa cuando esa serie TODAVIA NO TIENE REGISTRO; en cuanto lo tiene,
 # manda el registro. Abrir otra serie es anadir una linea aqui.
 $BASES_SERIES = @{
   'PS1' = 34
   'PS2' = 71
+  'PS3' = 1
 }
 # La que se usa si no se dice ninguna. Es la unica que existia antes del 18/09/2026, y su
 # registro conserva el nombre de entonces para no tener que mover nada.

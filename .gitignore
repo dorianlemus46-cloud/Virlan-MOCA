@@ -25,6 +25,8 @@ azul/azul_renovables.csv
 # La lista de ordenes exportada de Excel: numeros de cuenta y razones sociales reales de
 # TODOS los clientes del dia. Es el archivo con mas datos personales del proyecto.
 azul/lista_ordenes.csv
+# El mismo archivo tal como lo descarga Excel, con mayuscula y espacio en el nombre
+azul/Lista _Ordenes.csv
 
 # Arboles de respaldo de sesiones de optimizacion. Son copias del codigo mas sus propias
 # salidas; para eso esta el historial de git.

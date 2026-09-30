@@ -144,6 +144,13 @@ chica tipo Excel: **N × 4 columnas**.
 | Fecha de expiración | `Fecha Final del Compromiso` | 2 |
 | MPE | `MPE` | 2 |
 | Dispositivo | `Marca (Fabricante)` + `Modelo` | 2 |
+| Sufijo MPP/CPP | `Tipo de Número` | 2 · exacto `MPP` o `CPP`, si no está no se pone nada |
+| Sufijo CTRL/LIBRE | `Tipo de Suscripción` | 2 · `CTRL` solo si dice "Híbrido con Verificación Crediticia" |
+
+> **Columna 2 sin verificar contra pantalla (29/09/2026).** `Tipo de Número` y `Tipo de
+> Suscripción` se leen igual que `MPE`/`Marca`/`Modelo` (columna 2 de la misma ficha), por
+> analogía, no por un volcado de este script. Si el sufijo del plan sale vacío en líneas que sí
+> deberían traerlo, correr `-VolcarCampos` y ajustar el offset en `azul_fast.ps1`.
 
 Jerarquía: `Plan Móvil → Compromiso → …` — **`MPE` es el último hijo de `Compromiso`**.
 `MPE` y `Fecha Final` tienen que caer **dentro del bloque `Compromiso`**; `Plan Forzoso`
@@ -162,7 +169,8 @@ datos de una línea a otra.
 
 - **Sin nodo `Compromiso`** → SIM/eSIM sin contrato. Desde el 28/09/2026 **no entra a
   la base**: va al bloque `# SIM EXCLUIDAS` del CSV, que no se escribe en Word (ver
-  `docs/decisiones.md`).
+  `docs/decisiones.md`). Desde el 29/09/2026, antes de cerrar el detalle, se intenta leer
+  su última "Bulk Renewal" — ver el recuadro de abajo.
 - **`Marca`/`Modelo` = `N/A`** → equipo del cliente, sin registrar. `SIM y Equipos`
   dice `desconocido`.
 - **Líneas `Cancelado`** suelen venir sin plan. No se les abre el detalle.
@@ -175,6 +183,22 @@ datos de una línea a otra.
 > `Plan Forzoso` sale del mapa de datos, no de una corrida. Si el resumen reporta
 > líneas sin Plan Forzoso legible, correr `diagnostico\jab_attrs.ps1` y ajustar la
 > constante `L_DUR` en `azul_fast.ps1`.
+
+### Historial de cambio de una SIM (29/09/2026) — sin verificar contra pantalla
+
+Para una línea SIM, `LeerUltimaBulkSim` (en `azul_fast.ps1`) intenta, antes de cerrar el
+detalle: pulsar la pestaña `Historial de cambio` (rol `page tab`), pulsar `Ver Todo` (sin esto
+solo salen las 20 filas más viejas — medido a mano en CLAFOR, 28/09/2026, no con este script) y
+tomar la fecha más reciente de cualquier fila cuya actividad contenga `Bulk Renewal`,
+`Renovación`, `Renewal` o `Renovar`.
+
+**Ninguno de estos tres nombres —la pestaña, el botón, el rol— sale de un volcado de este
+script.** Vienen del PROMPT que dejó Dorian, leído a mano contra Azul. Por diseño no se busca
+la tabla del historial por tamaño ni por posición de columna: se recorren todas las tablas que
+queden en el detalle y se lee el contenido de cada celda, así que sobrevive a que la pestaña
+tenga más de una tabla o a que "Fecha efectiva"/"Actividad" no caigan en las columnas
+esperadas. Si `-VolcarCampos` muestra que la pestaña o el botón se llaman distinto, ajustar
+`L_HIST`/`L_VERTODO` en `azul_fast.ps1`.
 
 ---
 

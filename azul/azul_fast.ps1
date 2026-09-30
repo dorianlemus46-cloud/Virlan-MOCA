@@ -13,9 +13,15 @@ param(
   [switch]$SinWord,
   # Pausas ADICIONALES para no pedirle datos a Azul mas rapido de lo que aguanta una persona
   # (Dorian, 07/09/2026: a mano aguanta horas, con el script se caia en minutos). Se SUMAN a
-  # las esperas que ya habia; ninguna las sustituye. En segundos.
-  [int]$PausaLineas = 4,   # entre cerrar el detalle de una linea y seleccionar la siguiente
-  [int]$PausaLectura = 7,  # entre abrir el detalle de una linea y empezar a leerlo
+  # las esperas que ya habia; ninguna las sustituye. En segundos, admiten decimales.
+  #
+  # Bajadas a 1.5 el 29/09/2026, y a 0 el mismo dia como PRUEBA (Dorian): antes 4 y 7. Se
+  # suman DESPUES de que la condicion ya se cumplio -- el detalle abierto, la lectura lista
+  # -- no en vez de esperar esa condicion; en 0, lo unico que marca el ritmo es el sondeo
+  # por condicion que ya existia. Es la misma configuracion que el 07/09/2026 hizo que Azul
+  # se cayera en minutos en vez de aguantar horas -- ver la nota de arriba.
+  [double]$PausaLineas = 0,   # entre cerrar el detalle de una linea y seleccionar la siguiente
+  [double]$PausaLectura = 0,  # entre abrir el detalle de una linea y empezar a leerlo
   # Donde esta el enlace "Cliente:" de la banda de arriba, en coordenadas RELATIVAS a la
   # esquina superior izquierda de la ventana de Azul. En 0 -- lo normal -- lo decide la
   # maquina (Test-ClicMirando en captura.ps1): la posicion fija de siempre, 500,120, o sacada
@@ -46,7 +52,10 @@ param(
   [switch]$SoloLeer,
   # Leer SOLO estas lineas (numeros separados por coma) y volcar la ficha completa de cada una
   # al progreso. Vacio = todas las lineas, lo de siempre.
-  [string]$Numeros = ""
+  [string]$Numeros = "",
+  # No soltar los objetos del puente tras usarlos (lo de antes del 30/09/2026). Solo para
+  # comparar una corrida con y sin liberar; ver LIBERAR en la clase Azul.
+  [switch]$SinLiberar
 )
 if ($SoloLeer) { $SinWord = [switch]$true }
 $ErrorActionPreference='Stop'
@@ -91,18 +100,34 @@ public static class Azul {
   const string L_MAR  = "Marca";
   const string L_SIMEQ= "SIM y Equipos";
   const string MULT   = "m\u00FAltiples ";        // multiples
+  // Sufijo del plan (PROMPT SUFIJOS Y SIM, 29/09/2026): "Tipo de N\u00FAmero" da MPP/CPP,
+  // "Tipo de Suscripci\u00F3n" da CTRL/LIBRE. Viven en la misma ficha que L_PLAN.
+  const string L_TNUM = "Tipo de N\u00FAmero";
+  const string L_TSUS = "Tipo de Suscripci\u00F3n";
+  // Historial de cambio de una SIM (mismo PROMPT). NO se ha corrido contra Azul real: la
+  // pestana y el boton salen de lo que Dorian dejo escrito, no de un volcado de este script.
+  const string L_HIST   = "Historial de cambio";
+  const string L_VERTODO= "Ver Todo";
 
   [DllImport(D,CallingConvention=CallingConvention.Cdecl)] static extern void Windows_run();
   [DllImport(D,CallingConvention=CallingConvention.Cdecl)] static extern bool getAccessibleContextFromHWND(IntPtr h,out int vm,out long ac);
   [DllImport(D,CallingConvention=CallingConvention.Cdecl)] static extern bool getAccessibleContextInfo(int vm,long ac,out ACI i);
   [DllImport(D,CallingConvention=CallingConvention.Cdecl)] static extern long getAccessibleChildFromContext(int vm,long ac,int idx);
-  [DllImport(D,CallingConvention=CallingConvention.Cdecl)] static extern bool getAccessibleTableInfo(int vm,long ac,out ATI i);
+  [DllImport(D,EntryPoint="getAccessibleTableInfo",CallingConvention=CallingConvention.Cdecl)] static extern bool getAccessibleTableInfoRaw(int vm,long ac,out ATI i);
+  // La info de tabla trae cuatro objetos (titulo, resumen, contexto, tabla) que nadie usa aqui:
+  // solo filas y columnas. Se sueltan en el acto, que si no cada sondeo del tamano deja cuatro.
+  static bool getAccessibleTableInfo(int vm,long ac,out ATI i){
+    bool ok=getAccessibleTableInfoRaw(vm,ac,out i);
+    if(ok){ Rel(i.caption); Rel(i.summary); Rel(i.ctx); Rel(i.tbl); }
+    return ok;
+  }
   [DllImport(D,CallingConvention=CallingConvention.Cdecl)] static extern bool getAccessibleActions(int vm,long ac,IntPtr a);
   [DllImport(D,CallingConvention=CallingConvention.Cdecl)] static extern bool doAccessibleActions(int vm,long ac,IntPtr a,out int f);
   // Seleccion por el modelo real de la tabla. El indice es de CELDA, no de fila:
   // para la fila r hay que pasar r*columnas. Esto si dispara los listeners de Azul.
   [DllImport(D,CallingConvention=CallingConvention.Cdecl)] static extern void addAccessibleSelectionFromContext(int vm,long ac,int i);
   [DllImport(D,CallingConvention=CallingConvention.Cdecl)] static extern void clearAccessibleSelectionFromContext(int vm,long ac);
+  [DllImport(D,CallingConvention=CallingConvention.Cdecl)] static extern void releaseJavaObject(int vm,long ac);
   [DllImport("user32.dll")] static extern bool PeekMessage(out MSG m,IntPtr h,uint a,uint b,uint c);
   [DllImport("user32.dll")] static extern bool TranslateMessage(ref MSG m);
   [DllImport("user32.dll")] static extern IntPtr DispatchMessage(ref MSG m);
@@ -165,6 +190,30 @@ public static class Azul {
   public static long Llamadas(){ return jab; }
   static bool Inf(long ac,out ACI i){ jab++; return getAccessibleContextInfo(vm,ac,out i); }
   static long Kid(long ac,int k){ jab++; return getAccessibleChildFromContext(vm,ac,k); }
+  // El puente retiene en el heap de Azul (512 MB) todo objeto que devuelve hasta que se le pide
+  // soltarlo (doc. de Oracle). Sin esto cada nodo visitado se queda vivo para siempre. Solo para
+  // lo que se tira en el acto; nunca root, panes ni nada que se devuelva o se guarde.
+  // LIBERAR=false (-SinLiberar) deja el comportamiento de antes, para comparar.
+  public static bool LIBERAR=true;
+  static long liberados=0;
+  public static long Liberados(){ return liberados; }
+  static void Rel(long ac){ if(ac==0 || !LIBERAR) return; liberados++; releaseJavaObject(vm,ac); }
+  static void RelTodos(List<long> l,long menos){ foreach(long x in l) if(x!=menos) Rel(x); }
+  // Para "hay un marco?" en bucles de sondeo: pregunta y suelta en el mismo paso.
+  static bool Hay(long f){ Rel(f); return f!=0; }
+  // Lo que se guarda para toda la corrida (root y panes), soltado al final del script.
+  public static void Soltar(){ RelTodos(panes,0); panes=new List<long>(); Rel(root); root=0; }
+
+  // Memoria de la tabla de atributos de UNA linea: el lector la recorre 4-5 veces (plan,
+  // sufijo, marca/modelo, nombre comercial...) pidiendo las mismas celdas al puente. Se lee
+  // cada celda una vez. Se vacia al elegir la tabla de cada linea: un manejador soltado puede
+  // volver a salir con el mismo numero para otra tabla.
+  static Dictionary<int,string> memo=new Dictionary<int,string>();
+  static void MemoNueva(){ memo.Clear(); }
+  static string TxtM(long tbl,int idx){
+    string s; if(memo.TryGetValue(idx,out s)) return s;
+    s=Txt(tbl,idx); memo[idx]=s; return s;
+  }
 
   static bool Click(long ac){
     int sz=4+MAXA*NB; IntPtr b=Marshal.AllocHGlobal(sz); string act=null;
@@ -186,20 +235,30 @@ public static class Azul {
 
   static List<long> Find(long start,Func<ACI,long,bool> pred,int cap,bool firstOnly){
     var res=new List<long>(); var st=new Stack<long>(); st.Push(start); int n=0; ACI i;
-    while(st.Count>0 && n<cap){
-      long ac=st.Pop(); n++;
-      if(!Inf(ac,out i)) continue;
-      if(pred(i,ac)){ res.Add(ac); if(firstOnly) return res; }
-      if(i.role_en_US=="table") continue;
-      for(int k=i.childrenCount-1;k>=0;k--){ long c=Kid(ac,k); if(c!=0) st.Push(c); }
+    try{
+      while(st.Count>0 && n<cap){
+        long ac=st.Pop(); n++;
+        bool devuelto=false;
+        if(Inf(ac,out i)){
+          if(pred(i,ac)){ res.Add(ac); devuelto=true; if(firstOnly) return res; }
+          if(i.role_en_US!="table")
+            for(int k=i.childrenCount-1;k>=0;k--){ long c=Kid(ac,k); if(c!=0) st.Push(c); }
+        }
+        if(!devuelto && ac!=start) Rel(ac);
+      }
+    } finally {
+      // lo que quedo en la pila al salir antes (firstOnly o tope) tampoco se va a usar
+      while(st.Count>0){ long r=st.Pop(); if(r!=start) Rel(r); }
     }
     return res;
   }
   static long First(long s,Func<ACI,long,bool> p){ var r=Find(s,p,60000,true); return r.Count>0?r[0]:0; }
   static string Cel(long tbl,int idx){
     long c=Kid(tbl,idx); if(c==0) return "";
-    ACI i; if(!Inf(c,out i)) return "";
-    return i.name==null?"":i.name.Trim();
+    try{
+      ACI i; if(!Inf(c,out i)) return "";
+      return i.name==null?"":i.name.Trim();
+    } finally { Rel(c); }
   }
 
   // En el arbol de atributos la columna 0 son nodos "tree" cuyo texto NO viene en
@@ -217,10 +276,12 @@ public static class Azul {
   // texto de una celda: primero name, y si viene vacio se usa description sin HTML
   static string Txt(long tbl,int idx){
     long c=Kid(tbl,idx); if(c==0) return "";
-    ACI i; if(!Inf(c,out i)) return "";
-    string n=(i.name==null?"":i.name.Trim());
-    if(n.Length>0) return n;
-    return Strip(i.description);
+    try{
+      ACI i; if(!Inf(c,out i)) return "";
+      string n=(i.name==null?"":i.name.Trim());
+      if(n.Length>0) return n;
+      return Strip(i.description);
+    } finally { Rel(c); }
   }
   // Los marcos internos son hijos DIRECTOS de un desktop pane. Cacheamos los panes
   // una vez: asi cada sondeo cuesta ~10 llamadas JAB en vez de recorrer todo el arbol.
@@ -234,8 +295,8 @@ public static class Azul {
       int kc=pi.childrenCount;
       for(int k=0;k<kc;k++){
         long c=Kid(panes[p],k); if(c==0) continue;
-        ACI ci; if(!Inf(c,out ci)) continue;
-        if(ci.role_en_US=="internal frame" && ci.name!=null && ci.name.StartsWith(DET_PREFIX)) return c;
+        ACI ci; if(Inf(c,out ci) && ci.role_en_US=="internal frame" && ci.name!=null && ci.name.StartsWith(DET_PREFIX)) return c;
+        Rel(c);
       }
     }
     return 0;
@@ -244,15 +305,78 @@ public static class Azul {
   static long DetFrameFull(){
     return First(root,(i,ac)=> i.role_en_US=="internal frame" && i.name!=null && i.name.StartsWith(DET_PREFIX));
   }
+
+  // texto que marca una fila del Historial de cambio como renovacion. Solo aparecio
+  // "Bulk Renewal" en la evidencia del PROMPT (28/09/2026, 4 lineas), pero el propio
+  // PROMPT pide contar tambien "Renovacion", "Renewal" y "Renovar" si algun dia aparecen.
+  static bool EsRenovacion(string v){
+    if(string.IsNullOrEmpty(v)) return false;
+    string t=v.ToLowerInvariant();
+    return t.IndexOf("bulk renewal")>=0 || t.IndexOf("renovaci")>=0
+        || t.IndexOf("renewal")>=0 || t.IndexOf("renovar")>=0;
+  }
+
+  // "Ultima actualizacion (Bulk Renewal)" de una linea SIM: pestana Historial de cambio,
+  // "Ver Todo" (sin el solo salen las 20 filas mas viejas, CLAFOR 28/09/2026), y de ahi la
+  // fecha mas reciente de una fila cuya Actividad sea una renovacion.
+  //
+  // ESCRITO, NO PROBADO CONTRA AZUL REAL (29/09/2026). El nombre de la pestana, el del boton
+  // y el rol "page tab" salen del PROMPT que dejo Dorian, leido a mano contra Azul, no de un
+  // volcado de este script. Por eso NO se adivina nada mas alla de esas dos etiquetas: si la
+  // pestana o el boton no aparecen con ese texto exacto, se vuelve con "" y quien llama lo
+  // nota como "sin Historial de cambio", nunca como una fecha. Tampoco se descarta la linea
+  // ni se toca Azul de otra forma: es una consulta mas, igual que el resto del detalle.
+  //
+  // No se busca la tabla por tamano (como con la ficha de Configuracion) porque tras cambiar
+  // de pestana pueden quedar varias tablas en el arbol y no hay forma de saber cual es la
+  // grande sin haberlo visto. En su lugar se recorren TODAS y se toma la fecha mas reciente
+  // de cualquier fila cuya Actividad diga renovacion: no depende de en que columna caiga
+  // "Fecha efectiva" ni "Actividad", solo de que el texto este en la fila.
+  static string LeerUltimaBulkSim(long det){
+    long tab=First(det,(i,ac)=> i.role_en_US=="page tab" && i.name!=null && i.name.IndexOf(L_HIST)>=0);
+    if(tab==0) tab=First(det,(i,ac)=> i.role_en_US=="push button" && i.name!=null && i.name.IndexOf(L_HIST)>=0);
+    if(tab==0) return "";
+    bool okTab=Click(tab); Rel(tab);
+    if(!okTab) return "";
+    Pump(1500);
+    long todo=First(det,(i,ac)=> i.role_en_US=="push button" && i.name!=null && i.name.Trim()==L_VERTODO);
+    if(todo!=0){ Click(todo); Rel(todo); Pump(1500); }
+
+    DateTime? mejor=null;
+    var hs=Find(det,(i,ac)=> i.role_en_US=="table",20000,false);
+    try{
+    foreach(long h in hs){
+      ATI ti; if(!getAccessibleTableInfo(vm,h,out ti)) continue;
+      int HR=ti.rowCount, HC=ti.columnCount;
+      if(HR<=0||HC<=0) continue;
+      int maxR=Math.Min(HR,3000);
+      for(int r=0;r<maxR;r++){
+        bool esRenov=false;
+        for(int c=0;c<HC;c++){ if(EsRenovacion(Txt(h,r*HC+c))){ esRenov=true; break; } }
+        if(!esRenov) continue;
+        for(int c=0;c<HC;c++){
+          string v=Txt(h,r*HC+c).Split(' ')[0];
+          DateTime dt;
+          if(DateTime.TryParseExact(v,new string[]{"d/M/yyyy","dd/MM/yyyy"},System.Globalization.CultureInfo.InvariantCulture,0,out dt)){
+            if(mejor==null||dt>mejor.Value) mejor=dt;
+          }
+        }
+      }
+    }
+    } finally { RelTodos(hs,0); }
+    return mejor.HasValue ? mejor.Value.ToString("dd/MM/yyyy") : "";
+  }
+
   static bool CerrarDetalle(){
     long d=DetFrame(); if(d==0) d=DetFrameFull(); if(d==0) return false;
     long b=First(d,(i,ac)=> i.role_en_US=="push button" && i.name!=null && i.name.Trim()=="Cerrar");
+    Rel(d);
     if(b==0) return false;
-    Click(b);
+    Click(b); Rel(b);
     // Sondeo en vez de esperar 700 ms fijos: en cuanto el marco desaparece, seguimos.
     // DetFrame() solo recorre los desktop panes cacheados, asi que preguntar es barato.
     // El presupuesto de tiempo es el mismo de antes; lo normal es salir a los ~160 ms.
-    for(int w=0; w<9 && DetFrame()!=0; w++) Pump(80);
+    for(int w=0; w<9 && Hay(DetFrame()); w++) Pump(80);
     return true;
   }
   // ---- panel de la vista general del cliente ----
@@ -281,32 +405,35 @@ public static class Azul {
       int kc=pi.childrenCount;
       for(int k=0;k<kc;k++){
         long c=Kid(panes[p],k); if(c==0) continue;
-        ACI ci; if(!Inf(c,out ci)) continue;
-        if(ci.role_en_US=="internal frame" && ci.name!=null && ci.name.StartsWith(CTA_PREFIX)) return c;
+        ACI ci; if(Inf(c,out ci) && ci.role_en_US=="internal frame" && ci.name!=null && ci.name.StartsWith(CTA_PREFIX)) return c;
+        Rel(c);
       }
     }
     return 0;
   }
-  public static string MarcoCuenta(){
-    long f=MarcoCuentaPanes(); if(f==0) return "";
-    ACI i; if(!Inf(f,out i)) return "";
-    return i.name==null?"":i.name;
+  // Nombre y geometria de un marco ya encontrado; lo suelta al terminar.
+  static string NombreDe(long f){
+    if(f==0) return "";
+    ACI i; bool ok=Inf(f,out i); Rel(f);
+    return (!ok || i.name==null)?"":i.name;
   }
+  static string GeoDe(long f){
+    if(f==0) return "";
+    ACI i; bool ok=Inf(f,out i); Rel(f);
+    return ok?(i.x+","+i.y+","+i.width+","+i.height):"";
+  }
+  public static string MarcoCuenta(){ return NombreDe(MarcoCuentaPanes()); }
   // "x,y,w,h" del marco. La X de su barra de titulo se calcula de aqui en vez de clavarla:
   // el puente no expone los botones de la barra, pero si la geometria del marco.
-  public static string GeoMarcoCuenta(){
-    long f=MarcoCuentaPanes(); if(f==0) return "";
-    ACI i; if(!Inf(f,out i)) return "";
-    return i.x+","+i.y+","+i.width+","+i.height;
-  }
+  public static string GeoMarcoCuenta(){ return GeoDe(MarcoCuentaPanes()); }
   // Espera al TITULO, no al reloj: mientras carga, el marco se llama "Formulario" y se ve
   // como un formulario en blanco con boton "Crear". Solo cuando termina de cargar el titulo
   // pasa a "Cuenta: <nombre>".
   public static string EsperarMarcoCuenta(int seg){
     DateTime tope=DateTime.Now.AddSeconds(seg);
     while(DateTime.Now<tope){
-      long f=MarcoCuentaPanes();
-      if(f!=0){ ACI i; if(Inf(f,out i) && i.name!=null && i.name.Length>0) return i.name; }
+      string n=NombreDe(MarcoCuentaPanes());
+      if(n.Length>0) return n;
       Pump(400);
     }
     return MarcoCuenta();
@@ -330,8 +457,8 @@ public static class Azul {
       int kc=pi.childrenCount;
       for(int k=0;k<kc;k++){
         long c=Kid(panes[p],k); if(c==0) continue;
-        ACI ci; if(!Inf(c,out ci)) continue;
-        if(ci.role_en_US=="internal frame" && ci.name!=null && ci.name.StartsWith(FORM_PREFIX)) return c;
+        ACI ci; if(Inf(c,out ci) && ci.role_en_US=="internal frame" && ci.name!=null && ci.name.StartsWith(FORM_PREFIX)) return c;
+        Rel(c);
       }
     }
     return 0;
@@ -345,8 +472,8 @@ public static class Azul {
       int kc=pi.childrenCount;
       for(int k=0;k<kc;k++){
         long c=Kid(panes[p],k); if(c==0) continue;
-        ACI ci; if(!Inf(c,out ci)) continue;
-        if(ci.role_en_US=="internal frame" && ci.name!=null && ci.name.StartsWith(pref)) return c;
+        ACI ci; if(Inf(c,out ci) && ci.role_en_US=="internal frame" && ci.name!=null && ci.name.StartsWith(pref)) return c;
+        Rel(c);
       }
     }
     return 0;
@@ -365,23 +492,15 @@ public static class Azul {
   // No es la vista que quiere la base -- trae datos de contacto, no el resumen de la cuenta --
   // asi que no se fotografia: se reconoce, se cierra y el bloque se queda con su hueco.
   const string CONT_PREFIX = "Contacto:";
-  public static string MarcoContacto(){
-    long f=MarcoPorPrefijo(CONT_PREFIX); if(f==0) return "";
-    ACI i; if(!Inf(f,out i)) return "";
-    return i.name==null?"":i.name;
-  }
-  public static string GeoMarcoContacto(){
-    long f=MarcoPorPrefijo(CONT_PREFIX); if(f==0) return "";
-    ACI i; if(!Inf(f,out i)) return "";
-    return i.x+","+i.y+","+i.width+","+i.height;
-  }
+  public static string MarcoContacto(){ return NombreDe(MarcoPorPrefijo(CONT_PREFIX)); }
+  public static string GeoMarcoContacto(){ return GeoDe(MarcoPorPrefijo(CONT_PREFIX)); }
   public static bool EsperarSinMarcoContacto(int seg){
     DateTime tope=DateTime.Now.AddSeconds(seg);
     while(DateTime.Now<tope){
-      if(MarcoPorPrefijo(CONT_PREFIX)==0) return true;
+      if(!Hay(MarcoPorPrefijo(CONT_PREFIX))) return true;
       Pump(400);
     }
-    return MarcoPorPrefijo(CONT_PREFIX)==0;
+    return !Hay(MarcoPorPrefijo(CONT_PREFIX));
   }
 
   // El panel del cliente, esperado en DOS FASES en vez de un solo reloj de 40 s.
@@ -423,7 +542,7 @@ public static class Azul {
     bool abierto=false;
     while(true){
       string n=MarcoCuenta(); if(n.Length>0) return n;
-      if(MarcoPorPrefijo(CONT_PREFIX)!=0 || MarcoFormularioPanes()!=0){ abierto=true; break; }
+      if(Hay(MarcoPorPrefijo(CONT_PREFIX)) || Hay(MarcoFormularioPanes())){ abierto=true; break; }
       if(DateTime.Now>=t1) break;
       Pump(300);
     }
@@ -434,7 +553,7 @@ public static class Azul {
     DateTime topeCont=DateTime.MaxValue;
     while(DateTime.Now<t2){
       string n=MarcoCuenta(); if(n.Length>0) return n;
-      if(MarcoPorPrefijo(CONT_PREFIX)!=0){
+      if(Hay(MarcoPorPrefijo(CONT_PREFIX))){
         if(topeCont==DateTime.MaxValue){
           topeCont=DateTime.Now.AddSeconds(segContacto);
           P("captura: hay una ficha de Contacto abierta; se le dan "+segContacto+" s mas por si la vista de cuenta todavia esta cargando");
@@ -463,8 +582,8 @@ public static class Azul {
       int kc=pi.childrenCount;
       for(int k=0;k<kc;k++){
         long c=Kid(panes[p],k); if(c==0) continue;
-        ACI ci; if(!Inf(c,out ci)) continue;
-        if(ci.role_en_US!="internal frame") continue;
+        ACI ci; bool ok=Inf(c,out ci); Rel(c);
+        if(!ok || ci.role_en_US!="internal frame") continue;
         if(sb.Length>0) sb.Append(" | ");
         sb.Append(ci.name==null?"(sin nombre)":ci.name.Trim());
       }
@@ -484,22 +603,14 @@ public static class Azul {
       int kc=pi.childrenCount;
       for(int k=0;k<kc;k++){
         long c=Kid(panes[p],k); if(c==0) continue;
-        ACI ci; if(!Inf(c,out ci)) continue;
-        if(ci.role_en_US=="internal frame" && ci.name!=null && ci.name.StartsWith(INT_PREFIX)) return c;
+        ACI ci; if(Inf(c,out ci) && ci.role_en_US=="internal frame" && ci.name!=null && ci.name.StartsWith(INT_PREFIX)) return c;
+        Rel(c);
       }
     }
     return 0;
   }
-  public static string MarcoInteraccion(){
-    long f=MarcoInteraccionPanes(); if(f==0) return "";
-    ACI i; if(!Inf(f,out i)) return "";
-    return i.name==null?"":i.name;
-  }
-  public static string GeoMarcoInteraccion(){
-    long f=MarcoInteraccionPanes(); if(f==0) return "";
-    ACI i; if(!Inf(f,out i)) return "";
-    return i.x+","+i.y+","+i.width+","+i.height;
-  }
+  public static string MarcoInteraccion(){ return NombreDe(MarcoInteraccionPanes()); }
+  public static string GeoMarcoInteraccion(){ return GeoDe(MarcoInteraccionPanes()); }
   public static bool EsperarSinMarcoInteraccion(int seg){
     DateTime tope=DateTime.Now.AddSeconds(seg);
     while(DateTime.Now<tope){
@@ -551,6 +662,7 @@ public static class Azul {
       long a2; string c2;
       long r=BuscaDescartar(c,av,cam,prof+1,out a2,out c2);
       if(r!=0){ aviso=a2; camino=c2; return r; }
+      Rel(c);
     }
     return 0;
   }
@@ -565,7 +677,7 @@ public static class Azul {
     string d=Strip(i.description);
     if(d.Length>0) sb.Append(d+" / ");
     int kc=i.childrenCount;
-    for(int k=0;k<kc;k++){ long c=Kid(ac,k); if(c==0) continue; sb.Append(TextoAviso(c,prof+1)); }
+    for(int k=0;k<kc;k++){ long c=Kid(ac,k); if(c==0) continue; sb.Append(TextoAviso(c,prof+1)); Rel(c); }
     return sb.ToString();
   }
 
@@ -600,6 +712,10 @@ public static class Azul {
     long aviso; string camino;
     long b=BuscaDescartar(raiz,0,"",0,out aviso,out camino);
     if(b==0) return "SINAVISO";
+    try{ return PulsarBoton(b,aviso,camino); }
+    finally { if(b!=raiz) Rel(b); if(aviso!=raiz && aviso!=b) Rel(aviso); }
+  }
+  static string PulsarBoton(long b,long aviso,string camino){
     if(aviso==0){ P("aviso al cerrar: hay boton 'Descartar' pero no dentro de un cuadro de aviso. Camino: "+camino); return "SINCUADRO:"+camino; }
     string txt=TextoAviso(aviso,0).Trim();
     if(txt.Length>400) txt=txt.Substring(0,400);
@@ -633,7 +749,7 @@ public static class Azul {
       int vm2; long r2;
       if(!getAccessibleContextFromHWND(h,out vm2,out r2) || r2==0) continue;
       if(vm2!=vm) continue;   // otra maquina virtual Java: sus manejadores no valen para esta
-      string s=PulsarDesde(r2);
+      string s=PulsarDesde(r2); Rel(r2);
       if(s!="SINAVISO"){ P("aviso al cerrar: estaba en una ventana aparte, no en la principal"); return s; }
     }
     return "SINAVISO";
@@ -655,6 +771,8 @@ public static class Azul {
   public static bool Init(IntPtr hwnd){
     Windows_run();
     hwndRaiz=hwnd;
+    // Init se llama dos veces por proceso (PowerShell y Run): soltar lo de la vez anterior.
+    Soltar();
     // Sondeo por condicion, no espera por reloj: se pregunta por lo que de verdad hace falta,
     // que es que el puente conteste con el contexto raiz de la ventana.
     //
@@ -708,18 +826,19 @@ public static class Azul {
       if(!getAccessibleTableInfo(vm,t,out ti)){ P("   tabla sin info"); continue; }
       long c0=Kid(t,0);
       string r0="(sin celda0)";
-      if(c0!=0){ ACI i0t; if(Inf(c0,out i0t)) r0=i0t.role_en_US; }
+      ACI i0=new ACI(); bool ok0=(c0!=0) && Inf(c0,out i0);
+      Rel(c0);
+      if(ok0) r0=i0.role_en_US;
       P("   tabla "+ti.rowCount+"x"+ti.columnCount+" celda0="+r0);
       if(ti.columnCount<10||ti.rowCount<1) continue;
-      if(c0==0) continue;
-      ACI i0; if(!Inf(c0,out i0)) continue;
-      if(i0.role_en_US=="radio button"){ sub=t; SR=ti.rowCount; SC=ti.columnCount; break; }
+      if(ok0 && r0=="radio button"){ sub=t; SR=ti.rowCount; SC=ti.columnCount; break; }
     }
+    RelTodos(tablas,sub);
     if(sub==0){ P("ERROR: sin tabla de Suscripciones"); return "ERROR: no encuentro la tabla de Suscripciones. Deja Azul en la pestana Suscripciones."; }
     P("tabla Suscripciones "+SR+"x"+SC);
 
     long btn=First(root,(i,ac)=> i.role_en_US=="push button" && i.name!=null && i.name.Trim()=="Ver Productos Asignados");
-    if(btn==0) return "ERROR: no encuentro el boton 'Ver Productos Asignados'.";
+    if(btn==0){ Rel(sub); return "ERROR: no encuentro el boton 'Ver Productos Asignados'."; }
 
     // ---- estado de la linea: columna 7 de la tabla de Suscripciones (Activa/Cancelado) ----
     // Las canceladas no se consideran. Se descartan AQUI, antes de abrir nada, asi que
@@ -768,6 +887,7 @@ public static class Azul {
           // Sin esto, una sola linea se comio 135 s de una corrida de 295 s (02/09/2026).
           DateTime tope=DateTime.Now.AddSeconds(40);
           bool porTiempo=false;
+          long detLinea=0, atLinea=0;
           try{
             // guarda: si la cuenta cambio bajo nuestros pies, abortar en vez de girar en vano
             if(Cel(sub,rows[n]*SC+1)!=nums[n]){
@@ -811,6 +931,7 @@ public static class Azul {
               ACI ri;
               marcada = r2!=0 && Inf(r2,out ri)
                         && ri.states_en_US!=null && ri.states_en_US.IndexOf("checked")>=0;
+              Rel(r2);
               habilitado = Habilitado(btn);
               if(marcada && habilitado) break;
               if(DateTime.Now>=topeSel) break;
@@ -834,6 +955,7 @@ public static class Azul {
             long det=DetFrame();
             for(int w=0;w<80 && det==0 && DateTime.Now<tope;w++){ Pump(150); det=DetFrame(); }
             if(det==0) det=DetFrameFull();   // red de seguridad, una sola vez
+            detLinea=det;
             P("   detalle="+(det!=0));
             if(det==0){
               porTiempo=(DateTime.Now>=tope);
@@ -861,11 +983,14 @@ public static class Azul {
             for(int w=0;w<60 && DateTime.Now<tope;w++){
               if(at==0){
                 int bk=0;
-                foreach(long d in Find(det,(i,ac)=> i.role_en_US=="table",20000,false)){
+                var ds=Find(det,(i,ac)=> i.role_en_US=="table",20000,false);
+                foreach(long d in ds){
                   ATI t2; if(!getAccessibleTableInfo(vm,d,out t2)) continue;
                   int kk=t2.rowCount*t2.columnCount;
                   if(kk>bk){ bk=kk; at=d; AR=t2.rowCount; AC=t2.columnCount; }
                 }
+                RelTodos(ds,at);
+                atLinea=at;
               } else { ATI t3; if(getAccessibleTableInfo(vm,at,out t3)){ AR=t3.rowCount; AC=t3.columnCount; } }
               // esperar a que el arbol DEJE de crecer: leerlo a medio cargar da datos incompletos
               if(at!=0 && AR>5 && AC>=3){
@@ -883,7 +1008,8 @@ public static class Azul {
 
             int maxR=Math.Min(AR,3000);
             string[] nm=new string[maxR];
-            for(int r=0;r<maxR;r++) nm[r]=Txt(at,r*AC);
+            MemoNueva();
+            for(int r=0;r<maxR;r++) nm[r]=TxtM(at,r*AC);
 
             // Volcado de averiguacion, solo de la primera linea: la tabla de atributos entera,
             // campo por campo. Va aqui y no antes porque aqui ya se espero a que el arbol deje
@@ -892,8 +1018,8 @@ public static class Azul {
               volcado=true;
               P("   ---- VOLCADO de campos del detalle: "+maxR+" filas x "+AC+" columnas ----");
               for(int r=0;r<maxR;r++){
-                string v2=(AC>2)?Txt(at,r*AC+2):"";
-                string v3=(AC>3)?Txt(at,r*AC+3):"";
+                string v2=(AC>2)?TxtM(at,r*AC+2):"";
+                string v3=(AC>3)?TxtM(at,r*AC+3):"";
                 P("   ["+r+"]  "+nm[r]+"  |  "+v2+"  |  "+v3);
               }
               P("   ---- fin del volcado ----");
@@ -908,7 +1034,7 @@ public static class Azul {
               else if(s2==L_MPE){ cMPE++; if(rMPE<0) rMPE=r; }
               else if(s2.StartsWith(L_FF)){ cFF++; if(rFF<0) rFF=r; }
               else if(s2.StartsWith(L_DUR)){ cDur++; if(rDur<0) rDur=r; }
-              else if(s2==L_MOD){ string v=Txt(at,r*AC+2); if(v!="N/A"&&v.Length>0) cMod++; }
+              else if(s2==L_MOD){ string v=TxtM(at,r*AC+2); if(v!="N/A"&&v.Length>0) cMod++; }
             }
             if(cMPE>1){ nota=MULT+"MPE"; CerrarDetalle(); goto finIntento; }
             if(cFF>1){ nota=MULT+"Fecha Final del Compromiso"; CerrarDetalle(); goto finIntento; }
@@ -917,7 +1043,31 @@ public static class Azul {
             if(cMod>1){ nota=MULT+"dispositivos"; CerrarDetalle(); goto finIntento; }
             if(cPlan==0){ nota="sin nodo "+L_PLAN; CerrarDetalle(); goto finIntento; }
 
-            plan=(AC>=4)?Txt(at,rPlan*AC+3):"";
+            plan=(AC>=4)?TxtM(at,rPlan*AC+3):"";
+
+            // ---- sufijo del plan: MPP/CPP (Tipo de Numero) y CTRL/LIBRE (Tipo de
+            // Suscripcion), PROMPT SUFIJOS Y SIM 29/09/2026 ----
+            // Cosmetico: no decide si la linea es renovable, asi que a diferencia de Plan/MPE/
+            // Fecha Final nunca manda a REVISAR ni exige nodo unico. Si el campo no esta, o si
+            // "Tipo de Numero" trae otra cosa que no sea exactamente MPP o CPP, se deja vacio:
+            // no se adivina (regla 2.1.3 del PROMPT). Se toma la PRIMERA coincidencia no vacia,
+            // igual que Marca/Modelo mas abajo.
+            string tNum="", tSus="";
+            for(int r=0;r<maxR;r++){
+              if(tNum.Length==0 && nm[r]==L_TNUM){ string v=TxtM(at,r*AC+2); if(v.Length>0) tNum=v; }
+              else if(tSus.Length==0 && nm[r]==L_TSUS){ string v=TxtM(at,r*AC+2); if(v.Length>0) tSus=v; }
+            }
+            if(tNum=="MPP"||tNum=="CPP") plan=plan+" "+tNum;
+            if(tSus.Length>0){
+              // CTRL solo si dice "Hibrido con Verificacion Crediticia"; cualquier otro valor
+              // (p.ej. "Pospago") es LIBRE. Sin acentos y en minusculas para no depender de
+              // como los traiga Azul.
+              string t=tSus.ToLowerInvariant()
+                .Replace("\u00e1","a").Replace("\u00e9","e").Replace("\u00ed","i")
+                .Replace("\u00f3","o").Replace("\u00fa","u");
+              bool esCtrl = t.IndexOf("hibrid")>=0 && t.IndexOf("verificacion")>=0;
+              plan=plan+" "+(esCtrl?"CTRL":"LIBRE");
+            }
 
             // ---- Compromiso debe ser hijo inmediato de Plan Movil ----
             int rComp=-1;
@@ -927,8 +1077,8 @@ public static class Azul {
             // "MOTOROLA XT2421-7" es el codigo del fabricante y no dice nada a quien vende.
             string marca="", modelo=""; int rMar=-1;
             for(int r=0;r<maxR;r++){
-              if(nm[r].StartsWith(L_MAR)){ string v=Txt(at,r*AC+2); if(v!="N/A"&&v.Length>0&&marca.Length==0){ marca=v; rMar=r; } }
-              else if(nm[r]==L_MOD){ string v=Txt(at,r*AC+2); if(v!="N/A"&&v.Length>0) modelo=v; }
+              if(nm[r].StartsWith(L_MAR)){ string v=TxtM(at,r*AC+2); if(v!="N/A"&&v.Length>0&&marca.Length==0){ marca=v; rMar=r; } }
+              else if(nm[r]==L_MOD){ string v=TxtM(at,r*AC+2); if(v!="N/A"&&v.Length>0) modelo=v; }
             }
             disp=(marca+" "+modelo).Trim();
 
@@ -952,8 +1102,8 @@ public static class Azul {
               for(int r=0;r<maxR;r++){
                 if(!nm[r].StartsWith(marca)) continue;
                 if(nm[r].Length<=marca.Length) continue;   // la fila es la marca sola, no el nombre
-                if(Txt(at,r*AC+2).Length>0) continue;      // trae valor: es un campo, no el equipo
-                if(AC>3 && Txt(at,r*AC+3).Length>0) continue;
+                if(TxtM(at,r*AC+2).Length>0) continue;      // trae valor: es un campo, no el equipo
+                if(AC>3 && TxtM(at,r*AC+3).Length>0) continue;
                 disp=nm[r].Trim(); origenDisp="marca"; break;
               }
             }
@@ -981,7 +1131,7 @@ public static class Azul {
                 if(s3!=s3.ToUpperInvariant()) continue;
                 bool letra=false; foreach(char ch in s3){ if(char.IsLetter(ch)){ letra=true; break; } }
                 if(!letra) continue;
-                if(Txt(at,r*AC+2).Length>0) continue;
+                if(TxtM(at,r*AC+2).Length>0) continue;
                 disp=s3; origenDisp="forma"; break;
               }
             }
@@ -994,7 +1144,7 @@ public static class Azul {
                 volcadoEquipo=true;
                 P("   ---- VOLCADO de la seccion del equipo: filas "+Math.Max(0,rMar-40)+" a "+Math.Min(maxR-1,rMar+1)+" ----");
                 for(int r=Math.Max(0,rMar-40);r<=Math.Min(maxR-1,rMar+1);r++){
-                  P("   ["+r+"]  "+nm[r]+"  |  "+(AC>1?Txt(at,r*AC+1):"")+"  |  "+(AC>2?Txt(at,r*AC+2):"")+"  |  "+(AC>3?Txt(at,r*AC+3):""));
+                  P("   ["+r+"]  "+nm[r]+"  |  "+(AC>1?TxtM(at,r*AC+1):"")+"  |  "+(AC>2?TxtM(at,r*AC+2):"")+"  |  "+(AC>3?TxtM(at,r*AC+3):""));
                 }
                 P("   ---- fin del volcado ----");
               }
@@ -1005,7 +1155,18 @@ public static class Azul {
             // Dorian no las quiere en las bases: van a su propio bloque, SIM EXCLUIDAS, que
             // queda en el CSV para el cuadre y NO se escribe en Word. Ojo: esto NO relaja las
             // demas causas de REVISAR.
-            if(rComp<0){ est="SIM"; esSim=true; nota="SIM/eSIM sin contrato"; CerrarDetalle(); goto finIntento; }
+            if(rComp<0){
+              est="SIM"; esSim=true;
+              // Ultima actualizacion de la SIM (Bulk Renewal), PROMPT SUFIJOS Y SIM 29/09/2026.
+              // LeerUltimaBulkSim esta ESCRITA, NO PROBADA contra Azul real: si la pestana o el
+              // boton no aparecen, vuelve "" y aqui se dice explicitamente que no se pudo leer,
+              // nunca se calla ni se adivina una fecha.
+              string ultBulk=LeerUltimaBulkSim(det);
+              nota = ultBulk.Length>0
+                ? "ultima actualizacion (Bulk Renewal): "+ultBulk
+                : "sin renovacion registrada en Historial de cambio (o no se pudo leer)";
+              CerrarDetalle(); goto finIntento;
+            }
 
             // ---- contencion: MPE y Fecha Final DENTRO del bloque Compromiso ----
             int fin=rComp+12;
@@ -1015,12 +1176,12 @@ public static class Azul {
             if(rFF<=rComp||rFF>fin){ nota="Fecha Final fuera del bloque Compromiso"; CerrarDetalle(); goto finIntento; }
 
             // MPE se reporta tal cual lo entrega Azul, incluidos 0 y -1 (decision del usuario)
-            mpe=Txt(at,rMPE*AC+2);
-            ffin=Txt(at,rFF*AC+2);
+            mpe=TxtM(at,rMPE*AC+2);
+            ffin=TxtM(at,rFF*AC+2);
             // Plan Forzoso (12/24/36 meses) = "Duracion del Compromiso", y solo si cae
             // DENTRO del bloque Compromiso, igual que MPE y Fecha Final. Si Azul no trae
             // la etiqueta se deja vacio y se cuenta al final: vacio no es adivinar.
-            if(rDur>rComp && rDur<=fin) forz=Txt(at,rDur*AC+2);
+            if(rDur>rComp && rDur<=fin) forz=TxtM(at,rDur*AC+2);
             CerrarDetalle();
 
             if(ffin.Length==0){ nota="Fecha Final vacia"; goto finIntento; }
@@ -1043,6 +1204,7 @@ public static class Azul {
             }
           } catch(Exception ex){ nota="error: "+ex.Message; transitorio=true; }
           finIntento:
+          Rel(atLinea); Rel(detLinea);
           if(abortado) break;
           // Un fallo por tiempo no se reintenta: si Azul tardo 40 s en no responder,
           // no se va a componer en 1.2 s, y el reintento duplica la espera para nada.
@@ -1075,7 +1237,10 @@ public static class Azul {
         var tags=new List<string>();
         if(esSim) tags.Add("SIM");
         if(esSuspendida) tags.Add("Suspendida");
-        if(est=="REVISAR" && nota.Length>0) tags.Add(nota);
+        // la nota de una SIM lleva la ultima actualizacion (Bulk Renewal) o el aviso de que
+        // no se pudo leer; antes de esto se guardaba en nota pero nunca salia a ningun lado.
+        if(esSim && nota.Length>0) tags.Add(nota);
+        else if(est=="REVISAR" && nota.Length>0) tags.Add(nota);
         if(tags.Count>0) numOut=nums[n]+" ("+string.Join(" | ",tags)+")";
         P("   = "+est+"  plan="+plan+"  disp="+disp+"  mpe="+mpe+"  forz="+forz+"  ff="+ffin+"  nota="+nota);
         string fila=Csv(numOut)+","+Csv(plan)+","+Csv(disp)+","+Csv(mpe)+","+Csv(forz)+","+Csv(ffin);
@@ -1096,6 +1261,7 @@ public static class Azul {
       }
     } finally {
       for(int g=0;g<4 && CerrarDetalle();g++){}
+      Rel(btn); Rel(sub);
     }
 
     // Un solo encabezado y las filas agrupadas. Los separadores empiezan con '#', que es
@@ -1125,7 +1291,7 @@ public static class Azul {
     L("# "+ySi+" renovables, "+zNo+" no renovables, "+wRev+" a revisar"+(filasSim.Count>0?(", "+filasSim.Count+" SIM excluidas"):"")+(sinForz>0?("  ("+sinForz+" sin Plan Forzoso legible)"):""));
     L("# renovable = vence antes del "+tol.ToString("dd/MM/yyyy")+" = ventana al "+lim.ToString("dd/MM/yyyy")+" + 10 dias de tolerancia, sin limite hacia atras");
     L("# corrida "+hoy.ToString("dd/MM/yyyy")+", "+(sw.ElapsedMilliseconds/1000.0).ToString("0.0")+" s, "+jab+" llamadas JAB");
-    P("JAB total de la lectura: "+jab);
+    P("JAB total de la lectura: "+jab+", liberados: "+liberados+(LIBERAR?"":" (sin liberar)"));
     return log.ToString();
   }
 }
@@ -1382,6 +1548,7 @@ try { $hwnd = Get-AzulHwnd } catch { "ERROR: $($_.Exception.Message)"; exit 1 }
 [Azul]::PAUSA_LINEAS  = $PausaLineas  * 1000
 [Azul]::PAUSA_LECTURA = $PausaLectura * 1000
 [Azul]::VOLCAR        = [bool]$VolcarCampos
+[Azul]::LIBERAR       = -not $SinLiberar
 [Azul]::SOLO_NUMS     = (($Numeros -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }) -join ','
 
 # Init() aqui y no dentro de Run() porque cerrar el panel exige un clic real, y eso vive en
@@ -1477,6 +1644,8 @@ try {
   [Azul]::Nota("cierre interaccion: fallo - " + $_.Exception.Message)
   Write-Host "AVISO: fallo al intentar cerrar 'Inicio de Interaccion': $($_.Exception.Message)"
 }
+# Ya no se le pregunta nada mas a Azul: soltar lo que se guardo para toda la corrida.
+try { [Azul]::Soltar() } catch { }
 
 # ---- de quien es este CSV ----
 # Tres lineas de cabecera. La cuenta y la razon social vienen de la lista de ordenes, por

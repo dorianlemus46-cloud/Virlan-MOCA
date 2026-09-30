@@ -9,6 +9,95 @@
 
 ---
 
+## 2026-09-30 · Azul se degrada con el uso — el puente nunca soltaba lo que pedía
+
+**Síntoma.** Documentado desde el 04/09: misma cuenta, mismo código, 13 renovables a las
+13:07 y 2 a las 13:24 con un núcleo de Azul al 100%; el 5º cliente de un bloque colapsa;
+el 17/09 Azul murió a los 32 min "con 1.7 GB".
+
+**Causa (la más probable, no demostrada).** Java Access Bridge fija en el heap de Azul cada
+objeto que devuelve hasta que el cliente llama `releaseJavaObject` (documentación de Oracle,
+API de JAB). Ningún archivo del proyecto la declaraba ni la llamaba, y cada cliente hace
+decenas de miles de llamadas; el heap de Azul es de solo 512 MB (`max-heap-size` del JNLP
+que sirve el proveedor, no se puede subir desde aquí).
+
+**Lo que no es.** El 1.7 GB: medido el 30/09, Azul **nace** con ~1716 MB de memoria privada
+(la reserva del proceso de 32 bits, con el Chromium embebido de JxBrowser). No es una fuga
+ni un aviso por sí solo.
+
+**Arreglo.** `releaseJavaObject` en `azul_fast.ps1` y `buscar_cuenta.ps1` sobre todo lo que
+se descarta, más una memoria de la tabla de atributos para no pedir cada celda 4-5 veces.
+Detalle en `ESTADO.md`. `-SinLiberar` lo apaga.
+
+**Resultado.** BASE 035 completa con Azul recién abierto (31 min, 20 clientes, 0 a revisar,
+0 cortes, 0 fallos de lectura). El CPU de Azul fue igual en aumento por tercios
+(63% → 70% → 78%), sin llegar al 100%: **no está demostrado que el arreglo quite la
+degradación**, solo que no rompe nada. Falta la corrida A/B con `-SinLiberar`.
+
+**Guarda.** En este proyecto, todo objeto que devuelva el puente se suelta al terminar con
+él. En `buscar_cuenta.ps1`, lo que devuelven `Find`/`MarcoPanes` se suelta solo (vía
+`Anota`/`Sal`): ahí **no** se hace `Rel` a mano sobre eso, o se soltaría dos veces.
+
+## 2026-09-29 · "sin contexto raíz" en la prueba de 3 clientes — no se reprodujo al diagnosticar
+
+**Síntoma.** Reportado por correo: la prueba de 3 clientes falló en los tres con
+`ERROR: sin contexto raiz. El puente no ve a Azul`, incluso con Azul recién abierto (PID
+nuevo, 2 min de vida) y después de aplicar `jabswitch -enable` y reiniciar Azul dos veces
+(PID 16800 y luego 13384). `AtBroker.exe` no estaba corriendo en ese momento.
+
+**Diagnóstico repetido en esta sesión, con el mismo PID 13384 todavía abierto.** Todo de
+solo lectura, sin tocar Azul:
+
+- Las dos copias de `WindowsAccessBridge-32.dll` (`C:\Windows\SysWOW64\` y el `bin\` del
+  JRE) son **idénticas**: mismo tamaño (178816 bytes), misma versión de archivo
+  (8.0.4510.10) y mismo SHA256. No hay ninguna otra copia en el disco.
+- `.accessibility.properties` existe en el perfil, con
+  `assistive_technologies=com.sun.java.accessibility.AccessBridge`.
+- `jp2launcher` (PID 13384) tiene cargadas `JavaAccessBridge-32.dll` y
+  `JAWTAccessBridge-32.dll` del JRE de 32 bits.
+- `jp2launcher` y el PowerShell que carga el puente corren en la **misma sesión de
+  Windows** (SessionId 2) y **ninguno de los dos está elevado**.
+- `AtBroker.exe` **sigue sin estar corriendo**, igual que en el reporte original.
+- Con todo lo anterior sin cambiar, `diagnostico\jab_now.ps1` contra ese mismo PID 13384
+  **sí obtuvo el contexto raíz**: 1020 nodos, el marco
+  `Búsqueda: Contacto y Suscripción` visible y el botón `Ver Productos Asignados`
+  habilitado. `diagnostico\verificar.ps1` dio `TODO OK`.
+
+**Causa.** No identificada. El puente respondió con el mismo proceso de Azul, la misma
+sesión y la misma ausencia de `AtBroker.exe` que cuando fallaba, así que ninguna de las
+condiciones comprobadas explica el cambio. El candidato más probable, sin poder
+confirmarlo, es un estado transitorio del lado del puente o de la JVM en el momento del
+fallo original — quizás ligado a cuánto llevaba Azul abierto o a su carga en ese instante
+(ver la degradación medida el 04/09/2026 en la sección de arriba) — que se resolvió solo
+o con alguno de los reinicios, y no una causa de configuración permanente de esta máquina.
+
+**Arreglo.** Ninguno aplicado: no hizo falta, el puente ya respondía al diagnosticar.
+
+**Lo que no fue.** DLL duplicada o desactualizada, Java de 64 bits, elevación desigual
+entre procesos, y sesión de Windows distinta — las cuatro descartadas con evidencia.
+`AtBroker.exe` sigue sin poder confirmarse ni descartarse como causa: estaba apagado
+tanto cuando fallaba como cuando funcionó.
+
+**Confirmación.** Con Dorian avisado, se corrió `lote.ps1 -Limite 3 -Lista ".\azul\Lista _Ordenes.csv"`
+contra Azul real, mismo PID 13384. El puente respondió de punta a punta, sin un solo
+`ERROR: sin contexto raiz` en 9.5 min y 112 723 llamadas JAB combinadas: **2 escritos, 1
+fallo, 0 saltados.** Dos clientes se buscaron, cargaron, leyeron y escribieron bien en
+`BASE 034 PS1 VIRLAN.docx` (queda con 2 de 10, guardada y cerrada). El tercero falló **por
+diseño, no por el puente**: la rejilla trajo 5 resultados y la primera fila no mencionaba su
+razón social; la guarda de razón social lo detectó y no entró al cliente equivocado.
+
+**⚠ Pendiente:** revisar ese cliente a mano en Azul (su cuenta está en
+`azul\salidas\lote_progreso.csv` como `FALLO BUSQUEDA`) para ver cuál de
+las 5 filas de la rejilla es la correcta, y solo entonces reintentar con `-Forzar` si hace
+falta. Si `sin contexto raiz` vuelve a aparecer en una corrida futura, repetir esta misma
+batería y además registrar si `AtBroker.exe` aparece corriendo cuando funciona y ausente
+cuando falla, para saber si es la pieza que importa o una coincidencia — sigue sin poder
+confirmarse ni descartarse.
+
+→ `ESTADO.md`
+
+---
+
 ## 2026-09-09 · Un bloque de UNA sola línea salía en Word sin encabezados
 
 **Síntoma.** Encontrado al ejercitar `probar_word.ps1` por primera vez de verdad. En el

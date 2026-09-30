@@ -34,6 +34,12 @@
 #   .\lote.ps1 -Documento "...\BASE.docx" escribir en ESE documento y no en la base automatica
 #   .\lote.ps1 -PausaLineas 6 -PausaLectura 10 -PausaEscribir 8 -PausaResultado 15
 #                                          cambiar el ritmo contra Azul sin tocar ningun archivo
+#   .\lote.ps1 -FusionarProcesos          buscar_cuenta.ps1 y azul_fast.ps1 en UN proceso por
+#                                          cliente (azul\cliente.ps1) en vez de dos. ESCRITO,
+#                                          NO PROBADO CONTRA AZUL REAL -- ver ESTADO.md antes
+#                                          de usarlo en una corrida de verdad.
+#   .\lote.ps1 -SinLiberar                no soltar los objetos del puente JAB (lo de antes del
+#                                          30/09/2026). Solo para comparar con/sin liberar.
 #   .\lote.ps1
 #
 # NOTA: mantener este archivo en ASCII puro, igual que el resto de los .ps1 del proyecto.
@@ -74,11 +80,28 @@ param(
   # Pausas ADICIONALES para no pedirle datos a Azul mas rapido de lo que aguanta una persona
   # (Dorian, 07/09/2026: a mano aguanta horas, con el script se caia en minutos). Se SUMAN a
   # las esperas que ya habia en cada script hijo; ninguna las sustituye. Se pasan tal cual a
-  # buscar_cuenta.ps1 y azul_fast.ps1: cambiarlas aqui no toca ningun archivo. En segundos.
-  [int]$PausaLineas = 4,      # azul_fast.ps1: entre cerrar el detalle de una linea y la siguiente
-  [int]$PausaLectura = 7,     # azul_fast.ps1: entre abrir el detalle de una linea y leerlo
-  [int]$PausaEscribir = 5,    # buscar_cuenta.ps1: entre escribir la cuenta y pulsar "Buscar Ahora"
-  [int]$PausaResultado = 10   # buscar_cuenta.ps1: entre pulsar "Buscar Ahora" y leer el resultado
+  # buscar_cuenta.ps1 y azul_fast.ps1: cambiarlas aqui no toca ningun archivo. En segundos,
+  # admiten decimales.
+  #
+  # PausaLineas y PausaLectura bajadas a 1.5 (29/09/2026), y a 0 el mismo dia como PRUEBA:
+  # antes 4 y 7. Probadas en 0 contra Azul real: sin problema, se quedan en 0.
+  # PausaEscribir bajada a 3 y luego a 0: en 0 disparaba tecleo truncado seguido (la guarda
+  # lo arregla, pero a costa de un round-trip extra cada vez) -- subida a 1 el mismo dia.
+  # PausaResultado se queda en 0: no duerme a ciegas, solo deja de alargar el plazo base.
+  [double]$PausaLineas = 0,   # azul_fast.ps1: entre cerrar el detalle de una linea y la siguiente
+  [double]$PausaLectura = 0,  # azul_fast.ps1: entre abrir el detalle de una linea y leerlo
+  [int]$PausaEscribir = 1,    # buscar_cuenta.ps1: entre escribir la cuenta y pulsar "Buscar Ahora"
+  [int]$PausaResultado = 0,   # buscar_cuenta.ps1: entre pulsar "Buscar Ahora" y leer el resultado
+  # Fusiona buscar_cuenta.ps1 y azul_fast.ps1 en un solo proceso por cliente (azul\cliente.ps1),
+  # en vez de los dos de siempre. Ahorra un arranque de PowerShell por cliente. Paso 3 del
+  # analisis de rendimiento del 29/09/2026. Por defecto APAGADO: sin este switch, el camino es
+  # exactamente el de siempre, sin tocar. ESCRITO, NO PROBADO CONTRA AZUL REAL -- ver ESTADO.md
+  # antes de dejarlo puesto en una corrida de verdad.
+  [switch]$FusionarProcesos,
+  # Los hijos sueltan los objetos que piden al puente JAB en cuanto terminan con ellos (desde el
+  # 30/09/2026): el puente los retiene en el heap de Azul hasta que se le pide. Este switch lo
+  # apaga, para medir el mismo lote con y sin liberar. Con -FusionarProcesos NO se pasa.
+  [switch]$SinLiberar
 )
 $ErrorActionPreference = 'Stop'
 
@@ -490,6 +513,13 @@ else {
   Log "Serie $Serie. Una base son $PorBase clientes. El corte lo lleva el sistema y cruza corridas."
 }
 Log "Pausas: $PausaLineas s entre lineas, $PausaLectura s antes de leer una linea, $PausaEscribir s antes de buscar, $PausaResultado s de mas en el plazo para reconocer el resultado."
+$argLiberar = if ($SinLiberar) { ' -SinLiberar' } else { '' }
+if ($SinLiberar) {
+  Log "Objetos del puente: SIN liberar (-SinLiberar)."
+  if ($FusionarProcesos) { Log "OJO: -SinLiberar no llega a cliente.ps1; con -FusionarProcesos se libera igual." }
+} else {
+  Log "Objetos del puente: se liberan tras usarlos."
+}
 
 try {
   foreach ($o in $ordenes) {
@@ -521,8 +551,43 @@ try {
       }
     }
 
+    if ($FusionarProcesos) {
+      # --- buscar + leer, los dos en UN SOLO proceso (azul\cliente.ps1) ---
+      # Paso 3 del analisis de rendimiento del 29/09/2026. ESCRITO, NO PROBADO CONTRA AZUL
+      # REAL: ver ESTADO.md. No toca la logica de ninguno de los dos scripts, solo evita el
+      # segundo arranque de PowerShell.
+      $rc = Invoke-Hijo 'cliente.ps1' ("-Cuenta {0} -Razon {1} -PausaEscribir {2} -PausaResultado {3} -PausaLineas {4} -PausaLectura {5}" -f (Cita $o.Cuenta), (Cita $o.Razon), $PausaEscribir, $PausaResultado, $PausaLineas, $PausaLectura)
+      if ($rc -eq $TOPE_VENCIDO) {
+        Log "  la busqueda o la lectura se colgo y se mato. Se pasa al siguiente."
+        Add-Progreso $o.Cuenta $o.Razon 'FALLO TIEMPO' '' "cliente.ps1 paso de $TopeSeg s y se mato"
+        $fallos++
+        continue
+      }
+      if ($rc -ne 0) {
+        # cliente.ps1 deja esta marca justo despues de que la busqueda termina bien y antes de
+        # empezar a leer. Como los dos scripts corren ahora en el mismo proceso y los dos usan
+        # "exit 1" para cualquier error, el codigo de salida solo no dice cual de los dos fallo.
+        $marcaBuscar = Join-Path $raiz 'salidas\.busqueda_ok'
+        if (Test-Path -LiteralPath $marcaBuscar) {
+          Log "  la lectura fallo. Se pasa al siguiente."
+          Add-Progreso $o.Cuenta $o.Razon 'FALLO LECTURA' '' "cliente.ps1 (lectura) salio con $rc"
+        } else {
+          Log "  no se pudo abrir el cliente. Se pasa al siguiente."
+          Add-Progreso $o.Cuenta $o.Razon 'FALLO BUSQUEDA' '' "cliente.ps1 (busqueda) salio con $rc"
+        }
+        $fallos++
+        continue
+      }
+      if (-not (Test-Path $csvLector)) {
+        Log "  la lectura fallo (no dejo el CSV). Se pasa al siguiente."
+        Add-Progreso $o.Cuenta $o.Razon 'FALLO LECTURA' '' "cliente.ps1 no dejo $csvLector"
+        $fallos++
+        continue
+      }
+    } else {
+
     # --- buscar ---
-    $rc = Invoke-Hijo 'buscar_cuenta.ps1' ("-Cuenta {0} -Razon {1} -Restaurar -PausaEscribir {2} -PausaResultado {3}" -f (Cita $o.Cuenta), (Cita $o.Razon), $PausaEscribir, $PausaResultado)
+    $rc = Invoke-Hijo 'buscar_cuenta.ps1' (("-Cuenta {0} -Razon {1} -Restaurar -PausaEscribir {2} -PausaResultado {3}" -f (Cita $o.Cuenta), (Cita $o.Razon), $PausaEscribir, $PausaResultado) + $argLiberar)
     if ($rc -eq $TOPE_VENCIDO) {
       Log "  la busqueda se colgo y se mato. Se pasa al siguiente."
       Add-Progreso $o.Cuenta $o.Razon 'FALLO TIEMPO' '' "buscar_cuenta.ps1 paso de $TopeSeg s y se mato"
@@ -540,7 +605,7 @@ try {
     # -SinWord: quien decide si este cliente entra al documento es el lote, no el lector.
     # -Cuenta/-Razon no eligen que se lee: van a la cabecera del CSV para que el archivo diga
     # de quien es. Antes ese nombre salia del panel del cliente, que se abria para la foto.
-    $rc = Invoke-Hijo 'azul_fast.ps1' ("-SinWord -Cuenta {0} -Razon {1} -PausaLineas {2} -PausaLectura {3}" -f (Cita $o.Cuenta), (Cita $o.Razon), $PausaLineas, $PausaLectura)
+    $rc = Invoke-Hijo 'azul_fast.ps1' (("-SinWord -Cuenta {0} -Razon {1} -PausaLineas {2} -PausaLectura {3}" -f (Cita $o.Cuenta), (Cita $o.Razon), $PausaLineas, $PausaLectura) + $argLiberar)
     if ($rc -eq $TOPE_VENCIDO) {
       Log "  la lectura se colgo y se mato. Se pasa al siguiente."
       Add-Progreso $o.Cuenta $o.Razon 'FALLO TIEMPO' '' "azul_fast.ps1 paso de $TopeSeg s y se mato"
@@ -552,6 +617,7 @@ try {
       Add-Progreso $o.Cuenta $o.Razon 'FALLO LECTURA' '' "azul_fast.ps1 salio con $rc"
       $fallos++
       continue
+    }
     }
 
     # --- corrida completa? ---

@@ -48,8 +48,17 @@ param(
   # -PausaResultado ya NO se gasta esperando. Desde el 18/09/2026 es cuanto se ALARGA el
   # plazo que se le da a Azul para traer el resultado, y se sale en cuanto lo trae. Antes
   # eran diez segundos parado antes de mirar siquiera, y era donde mas tiempo se iba.
-  [int]$PausaEscribir = 5,   # entre escribir el numero de cuenta y pulsar "Buscar Ahora"
-  [int]$PausaResultado = 10  # segundos de mas en el plazo para reconocer el resultado
+  #
+  # Bajadas a 3 (29/09/2026), y a 0 el mismo dia como PRUEBA (Dorian). PausaEscribir en 0
+  # disparaba tecleo truncado con mucha mas frecuencia (releido y reintentado por la propia
+  # guarda, pero a costa de un round-trip extra contra Azul cada vez) -- subida a 1 el mismo
+  # dia para darle a Azul un respiro minimo antes de pulsar "Buscar Ahora". PausaResultado se
+  # queda en 0: no duerme a ciegas, solo deja de alargar el plazo base de 15 s.
+  [int]$PausaEscribir = 1,   # entre escribir el numero de cuenta y pulsar "Buscar Ahora"
+  [int]$PausaResultado = 0,  # segundos de mas en el plazo para reconocer el resultado
+  # No soltar los objetos del puente tras usarlos (lo de antes del 30/09/2026). Solo para
+  # comparar una corrida con y sin liberar; ver LIBERAR en la clase Busca.
+  [switch]$SinLiberar
 )
 $ErrorActionPreference = 'Stop'
 # NOTA: este archivo debe permanecer en ASCII puro, igual que azul_fast.ps1.
@@ -120,7 +129,14 @@ public static class Busca {
   [DllImport(D,CallingConvention=CallingConvention.Cdecl)] static extern bool getAccessibleContextFromHWND(IntPtr h,out int vm,out long ac);
   [DllImport(D,CallingConvention=CallingConvention.Cdecl)] static extern bool getAccessibleContextInfo(int vm,long ac,out ACI2 i);
   [DllImport(D,CallingConvention=CallingConvention.Cdecl)] static extern long getAccessibleChildFromContext(int vm,long ac,int idx);
-  [DllImport(D,CallingConvention=CallingConvention.Cdecl)] static extern bool getAccessibleTableInfo(int vm,long ac,out ATI2 i);
+  [DllImport(D,EntryPoint="getAccessibleTableInfo",CallingConvention=CallingConvention.Cdecl)] static extern bool getAccessibleTableInfoRaw(int vm,long ac,out ATI2 i);
+  // La info de tabla trae cuatro objetos (titulo, resumen, contexto, tabla) que nadie usa aqui:
+  // solo filas y columnas. Se sueltan en el acto, que si no cada sondeo del tamano deja cuatro.
+  static bool getAccessibleTableInfo(int vm,long ac,out ATI2 i){
+    bool ok=getAccessibleTableInfoRaw(vm,ac,out i);
+    if(ok){ Rel(i.caption); Rel(i.summary); Rel(i.ctx); Rel(i.tbl); }
+    return ok;
+  }
   [DllImport(D,CallingConvention=CallingConvention.Cdecl)] static extern bool getAccessibleActions(int vm,long ac,IntPtr a);
   [DllImport(D,CallingConvention=CallingConvention.Cdecl)] static extern bool doAccessibleActions(int vm,long ac,IntPtr a,out int f);
   [DllImport(D,CallingConvention=CallingConvention.Cdecl)] static extern bool requestFocus(int vm,long ac);
@@ -132,6 +148,7 @@ public static class Busca {
   [DllImport(D,CallingConvention=CallingConvention.Cdecl)] static extern void clearAccessibleSelectionFromContext(int vm,long ac);
   [DllImport(D,CallingConvention=CallingConvention.Cdecl)] static extern bool getAccessibleTextInfo(int vm,long ac,out ATXI i,int x,int y);
   [DllImport(D,CallingConvention=CallingConvention.Cdecl)] static extern bool getAccessibleTextRange(int vm,long ac,int start,int end,IntPtr t,short len);
+  [DllImport(D,CallingConvention=CallingConvention.Cdecl)] static extern void releaseJavaObject(int vm,long ac);
   [DllImport("user32.dll")] static extern bool PeekMessage(out MSG2 m,IntPtr h,uint a,uint b,uint c);
   [DllImport("user32.dll")] static extern bool TranslateMessage(ref MSG2 m);
   [DllImport("user32.dll")] static extern IntPtr DispatchMessage(ref MSG2 m);
@@ -165,16 +182,52 @@ public static class Busca {
   static bool Inf(long ac,out ACI2 i){ jab++; return getAccessibleContextInfo(vm,ac,out i); }
   static long Kid(long ac,int k){ jab++; return getAccessibleChildFromContext(vm,ac,k); }
   static bool Est(ACI2 i,string s){ return i.states_en_US!=null && i.states_en_US.IndexOf(s)>=0; }
+  // El puente retiene en el heap de Azul (512 MB) todo objeto que devuelve hasta que se le pide
+  // soltarlo (doc. de Oracle). Mismo criterio que en azul_fast.ps1: solo lo que se tira en el
+  // acto; nunca root, panes, la pestana cacheada ni nada que se devuelva o se guarde.
+  public static bool LIBERAR=true;
+  static long liberados=0;
+  public static long Liberados(){ return liberados; }
+  static void Rel(long ac){ if(ac==0 || !LIBERAR) return; liberados++; releaseJavaObject(vm,ac); }
+
+  // Lo que Find y MarcoPanes DEVUELVEN (marcos, tablas, botones) se anota aqui y se suelta
+  // cuando termina la funcion publica que lo pidio. Las publicas devuelven solo textos, bools
+  // o numeros, nunca un manejador, asi que al salir ya nadie usa lo que encontraron -- ni
+  // quien las llamo, sea PowerShell u otra publica. Queda fuera lo que se guarda a proposito
+  // entre llamadas: root, panes y la pestana recordada. En este archivo NUNCA se hace Rel a
+  // mano sobre algo anotado: se soltaria dos veces.
+  static List<long> arena=new List<long>();
+  static long Anota(long ac){ if(ac!=0) arena.Add(ac); return ac; }
+  static int Ent(){ return arena.Count; }
+  static void Sal(int marca){
+    for(int k=arena.Count-1;k>=marca;k--){
+      long x=arena[k]; arena.RemoveAt(k);
+      if(x!=pestCache && !panes.Contains(x)) Rel(x);
+    }
+  }
+  public static void Soltar(){
+    foreach(long p in panes) Rel(p); panes=new List<long>();
+    if(pestCache!=0){ Rel(pestCache); pestCache=0; pestCacheNombre=""; }
+    Rel(root); root=0;
+  }
 
   static List<long> Find(long start,Func<ACI2,long,bool> pred,int cap,bool firstOnly){
     var res=new List<long>(); var st=new Stack<long>(); st.Push(start); int n=0; ACI2 i;
-    while(st.Count>0 && n<cap){
-      long ac=st.Pop(); n++;
-      if(!Inf(ac,out i)) continue;
-      if(pred(i,ac)){ res.Add(ac); if(firstOnly) return res; }
-      // no descender en tablas: son miles de celdas. La tabla en si ya la vio el predicado.
-      if(i.role_en_US=="table") continue;
-      for(int k=i.childrenCount-1;k>=0;k--){ long c=Kid(ac,k); if(c!=0) st.Push(c); }
+    try{
+      while(st.Count>0 && n<cap){
+        long ac=st.Pop(); n++;
+        bool devuelto=false;
+        if(Inf(ac,out i)){
+          if(pred(i,ac)){ res.Add(Anota(ac)); devuelto=true; if(firstOnly) return res; }
+          // no descender en tablas: son miles de celdas. La tabla en si ya la vio el predicado.
+          if(i.role_en_US!="table")
+            for(int k=i.childrenCount-1;k>=0;k--){ long c=Kid(ac,k); if(c!=0) st.Push(c); }
+        }
+        if(!devuelto && ac!=start) Rel(ac);
+      }
+    } finally {
+      // lo que quedo en la pila al salir antes (firstOnly o tope) tampoco se va a usar
+      while(st.Count>0){ long r=st.Pop(); if(r!=start) Rel(r); }
     }
     return res;
   }
@@ -228,8 +281,8 @@ public static class Busca {
       ACI2 pi; if(!Inf(panes[p],out pi)) continue;
       for(int k=0;k<pi.childrenCount;k++){
         long c=Kid(panes[p],k); if(c==0) continue;
-        ACI2 ci; if(!Inf(c,out ci)) continue;
-        if(ci.role_en_US=="internal frame" && ci.name!=null && ci.name.Trim().StartsWith(prefijo)) return c;
+        ACI2 ci; if(Inf(c,out ci) && ci.role_en_US=="internal frame" && ci.name!=null && ci.name.Trim().StartsWith(prefijo)) return Anota(c);
+        Rel(c);
       }
     }
     return 0;
@@ -283,9 +336,9 @@ public static class Busca {
     return true;
   }
 
-  public static bool HayCIM(){ return Marco(F_CIM)!=0; }
+  static bool HayCIM_(){ return Marco(F_CIM)!=0; }
 
-  public static bool EsperarCIM(int seg){
+  static bool EsperarCIM_(int seg){
     DateTime tope=DateTime.Now.AddSeconds(seg);
     while(DateTime.Now<tope){
       // Solo la via de panes. Con Marco() cada vuelta que no encontraba costaba un recorrido
@@ -309,7 +362,7 @@ public static class Busca {
 
   // Criterios viejos en otros campos: la busqueda los combina, asi que un resto de una
   // consulta anterior devolveria otro cliente. Se avisa antes de pulsar nada.
-  public static string CamposConTexto(){
+  static string CamposConTexto_(){
     long cim=Marco(F_CIM); if(cim==0) return "ERROR: el formulario no esta abierto";
     var sb=new StringBuilder();
     foreach(long t in Find(cim,(i,ac)=> i.role_en_US=="text" && Est(i,"editable"),60000,false)){
@@ -342,7 +395,7 @@ public static class Busca {
   // Enfoca el campo y COMPRUEBA que quedo enfocado. Sin esta comprobacion, teclear seria
   // disparar a ciegas: las pulsaciones van a donde este el foco del sistema, y si el campo
   // no lo tiene acaban en otro sitio.
-  public static string EnfocarCF(){
+  static string EnfocarCF_(){
     long cim=Marco(F_CIM); if(cim==0) return "ERROR: el formulario no esta abierto";
     long c=CampoCF(cim);
     if(c==0) return "ERROR: no encuentro el campo '"+CAMPO+"' (text, editable) en el formulario";
@@ -360,7 +413,7 @@ public static class Busca {
   // Enfoca el PRIMER campo con restos, distinto de ID de CF, y dice cuanto hay que borrar.
   // Devuelve VACIO cuando ya no queda ninguno. Se hace de uno en uno porque borrar es teclear,
   // y teclear vive en PowerShell: asi el bucle queda arriba y aqui solo el puente.
-  public static string EnfocarSucio(){
+  static string EnfocarSucio_(){
     long cim=Marco(F_CIM); if(cim==0) return "ERROR: el formulario no esta abierto";
     long campo=CampoCF(cim);
     foreach(long t in Find(cim,(i,ac)=> i.role_en_US=="text" && Est(i,"editable"),60000,false)){
@@ -380,7 +433,7 @@ public static class Busca {
     return "VACIO";
   }
 
-  public static string LeerCF(){
+  static string LeerCF_(){
     long cim=Marco(F_CIM); if(cim==0) return "ERROR: el formulario no esta abierto";
     long c=CampoCF(cim); if(c==0) return "ERROR: no encuentro el campo";
     string v=Texto(c);
@@ -390,7 +443,7 @@ public static class Busca {
   // COMMIT. En Swing el texto vive en el documento del campo, pero la aplicacion suele
   // tomarlo cuando el campo PIERDE EL FOCO. Sin esto, releer el campo dice que el numero
   // esta ahi y la busqueda sale igual vacia, porque Siebel nunca lo recogio.
-  public static string CommitCF(string cuenta){
+  static string CommitCF_(string cuenta){
     long cim=Marco(F_CIM); if(cim==0) return "ERROR: el formulario no esta abierto";
     long c=CampoCF(cim); if(c==0) return "ERROR: no encuentro el campo";
     long otro=First(cim,(i,ac)=> i.role_en_US=="text" && Est(i,"editable") && ac!=c);
@@ -463,7 +516,7 @@ public static class Busca {
   // Foto del estado, en una linea. Las tres senales de "ya llego el resultado" van aqui:
   // que el formulario desaparezca, que 'Seleccionar' gane 'enabled', y que cambie el
   // contador de registros. Ninguna es una espera por reloj.
-  public static string Firma(){
+  static string Firma_(){
     long cim=Marco(F_CIM);
     long res=MarcoResultados(cim);   // se reaprovecha el cim de arriba, no se vuelve a buscar
     string sel="-", cont="-", tab="-";
@@ -494,7 +547,7 @@ public static class Busca {
   // el tramo de 20 s para abrir 'Suscripciones' arranco con Azul todavia montando la vista y
   // se agoto. Se descarta por el hueco sin rellenar y no por la falta del numero, que es lo
   // que de verdad distingue la plantilla de un nombre bueno.
-  public static string Interaccion(){
+  static string Interaccion_(){
     long f=First(root,(i,ac)=> i.role_en_US=="internal frame" && i.name!=null
                                && i.name.StartsWith(F_INT) && i.name.IndexOf('%')<0);
     if(f==0) return "";
@@ -506,7 +559,7 @@ public static class Busca {
 
   // Todo lo que hay abierto. Si Azul contesto con un aviso en vez de con resultados, aqui se
   // ve; si no se mira, un dialogo de error pasa por "no encontro nada".
-  public static string Marcos(){
+  static string Marcos_(){
     var sb=new StringBuilder();
     foreach(long f in Find(root,(i,ac)=> i.role_en_US=="internal frame" || i.role_en_US=="dialog" || i.role_en_US=="option pane",60000,false)){
       ACI2 i; if(!Inf(f,out i)) continue;
@@ -523,7 +576,7 @@ public static class Busca {
   // captura.ps1, que es donde vive todo lo que toca la maquina.
   //
   // No se clavan coordenadas: al boton si lo ve el puente, asi que se le pregunta cada vez.
-  public static string GeoBotonBuscar(){
+  static string GeoBotonBuscar_(){
     long cim=Marco(F_CIM); if(cim==0) return "ERROR: el formulario no esta abierto";
     long b=First(cim,(i,ac)=> i.role_en_US=="push button" && i.name!=null && i.name.Trim()==B_BUSCAR);
     if(b==0) return "ERROR: no encuentro el boton '"+B_BUSCAR+"'";
@@ -538,7 +591,7 @@ public static class Busca {
   // como lo primero: el formulario se cierra antes de que la rejilla termine de llenarse, y
   // mirar en ese hueco daria un conteo a medias. Es el mismo principio que ya gobierna la
   // espera del arbol de atributos y la de la captura.
-  public static string EsperarResultado(string antes,int seg){
+  static string EsperarResultado_(string antes,int seg){
     DateTime tope=DateTime.Now.AddSeconds(seg);
     string f=antes;
     while(DateTime.Now<tope){
@@ -566,7 +619,7 @@ public static class Busca {
   //   CARGADO|<marco>   el marco de interaccion aparecio y no es el que ya habia
   //   REJILLA|<fila 1>  la rejilla ya tiene primera fila con datos y 'Seleccionar' en pantalla
   //   NADA|             todavia no se sabe
-  public static string Desenlace(string interAntes){
+  static string Desenlace_(string interAntes){
     string r=EsperarInteraccion(interAntes,0);
     if(r.StartsWith("CARGADO|")) return r;
     long res=MarcoResultados(); if(res==0) return "NADA|";
@@ -586,7 +639,7 @@ public static class Busca {
   // Solo el marco de interaccion. Es lo que se espera despues de 'Seleccionar', donde la
   // rejilla ya no es un desenlace sino lo que se acaba de dejar atras. Con seg=0 es una
   // mirada suelta, sin espera.
-  public static string EsperarInteraccion(string interAntes,int seg){
+  static string EsperarInteraccion_(string interAntes,int seg){
     DateTime tope=DateTime.Now.AddSeconds(seg);
     while(true){
       string inter=Interaccion();
@@ -599,7 +652,7 @@ public static class Busca {
   // La primera fila se exige LEIDA DOS VECES IGUAL. Siebel pinta la rejilla mientras la llena,
   // y sobre esa misma fila se comprueba despues la razon social del Excel: leerla a medias
   // haria fallar la comprobacion en un cliente bueno. Son 200 ms, no los segundos de antes.
-  public static string EsperarDesenlace(string interAntes,int seg){
+  static string EsperarDesenlace_(string interAntes,int seg){
     DateTime tope=DateTime.Now.AddSeconds(seg);
     string previo="";
     while(true){
@@ -618,7 +671,7 @@ public static class Busca {
   // Cuantas filas con CONTENIDO trae la rejilla. Una rejilla vacia de Siebel no tiene cero
   // filas: tiene una fila en blanco, que es como se veia el "1x9" de las corridas que no
   // encontraron nada. Contar filas a secas daria un resultado donde no lo hay.
-  public static int FilasConDatos(){
+  static int FilasConDatos_(){
     long res=MarcoResultados(); if(res==0) return 0;
     long t=TablaDe(res); if(t==0) return 0;
     ATI2 ti; if(!getAccessibleTableInfo(vm,t,out ti)) return 0;
@@ -626,8 +679,8 @@ public static class Busca {
     for(int r=0;r<ti.rowCount;r++){
       for(int c=0;c<ti.columnCount;c++){
         long cc=Kid(t,r*ti.columnCount+c); if(cc==0) continue;
-        ACI2 ci; if(!Inf(cc,out ci)) continue;
-        if(ci.name!=null && ci.name.Trim().Length>0){ n++; break; }
+        ACI2 ci; bool ok=Inf(cc,out ci); Rel(cc);
+        if(ok && ci.name!=null && ci.name.Trim().Length>0){ n++; break; }
       }
     }
     return n;
@@ -636,7 +689,7 @@ public static class Busca {
   // Marca una fila de la rejilla. La prueba de que funciono no es que la llamada no falle,
   // sino que 'Seleccionar' pase a estar habilitado: ese boton esta apagado mientras no hay
   // fila elegida, asi que es la confirmacion que el propio Azul da.
-  public static string SeleccionarFila(int fila){
+  static string SeleccionarFila_(int fila){
     long res=MarcoResultados(); if(res==0) return "ERROR: no hay rejilla de resultados";
     long t=TablaDe(res); if(t==0) return "ERROR: la rejilla no tiene tabla";
     ATI2 ti; if(!getAccessibleTableInfo(vm,t,out ti)) return "ERROR: la tabla no da informacion";
@@ -656,7 +709,7 @@ public static class Busca {
   // Todo el texto de una fila, para poder comprobar CONTRA EL EXCEL que la fila que se va a
   // elegir es la del cliente pedido. Elegir la fila equivocada mete al cliente equivocado en
   // el documento, y eso no se ve hasta que ya esta escrito.
-  public static string FilaTexto(int fila){
+  static string FilaTexto_(int fila){
     long res=MarcoResultados(); if(res==0) return "";
     long t=TablaDe(res); if(t==0) return "";
     ATI2 ti; if(!getAccessibleTableInfo(vm,t,out ti)) return "";
@@ -667,19 +720,19 @@ public static class Busca {
   }
 
   // Geometria de una celda, para poder pulsar la fila de verdad si el puente no la marca.
-  public static string GeoCelda(int fila,int col){
+  static string GeoCelda_(int fila,int col){
     long res=MarcoResultados(); if(res==0) return "ERROR: no hay rejilla de resultados";
     long t=TablaDe(res); if(t==0) return "ERROR: la rejilla no tiene tabla";
     ATI2 ti; if(!getAccessibleTableInfo(vm,t,out ti)) return "ERROR: la tabla no da informacion";
     if(fila<0 || fila>=ti.rowCount || col<0 || col>=ti.columnCount) return "ERROR: celda fuera de la tabla";
-    long c=Kid(t,fila*ti.columnCount+col); if(c==0) return "ERROR: celda vacia";
+    long c=Anota(Kid(t,fila*ti.columnCount+col)); if(c==0) return "ERROR: celda vacia";
     ACI2 ci; if(!Inf(c,out ci)) return "ERROR: no puedo leer la celda";
     if(ci.width<=0||ci.height<=0) return "ERROR: la celda no tiene tamano utilizable";
     return "OK|"+ci.x+","+ci.y+","+ci.width+","+ci.height;
   }
 
   // Geometria de un boton de la rejilla de resultados ('Seleccionar'), para el clic real.
-  public static string GeoBotonResultados(string nombre){
+  static string GeoBotonResultados_(string nombre){
     long res=MarcoResultados(); if(res==0) return "ERROR: no hay rejilla de resultados";
     long b=First(res,(i,ac)=> i.role_en_US=="push button" && i.name!=null && i.name.Trim()==nombre);
     if(b==0) return "ERROR: no encuentro el boton '"+nombre+"' en la rejilla";
@@ -722,20 +775,21 @@ public static class Busca {
     if(pestCache!=0 && pestCacheNombre==nombre){
       ACI2 ci;
       if(Inf(pestCache,out ci) && ci.role_en_US=="page tab" && ci.name!=null && ci.name.Trim()==nombre) return pestCache;
-      pestCache=0; pestCacheNombre="";
+      long viejo=pestCache; pestCache=0; pestCacheNombre="";
+      if(!arena.Contains(viejo)) Rel(viejo);   // si sigue anotado, ya lo soltara Sal
     }
     long t=First(root,(i,ac)=> i.role_en_US=="page tab" && i.name!=null && i.name.Trim()==nombre);
     if(t!=0){ pestCache=t; pestCacheNombre=nombre; }
     return t;
   }
-  public static string GeoPestana(string nombre){
+  static string GeoPestana_(string nombre){
     long t=PestanaNodo(nombre);
     if(t==0) return "ERROR: no encuentro la pestana '"+nombre+"'";
     ACI2 ti; if(!Inf(t,out ti)) return "ERROR: no puedo leer la geometria de la pestana '"+nombre+"'";
     if(ti.width<=0||ti.height<=0) return "ERROR: la pestana '"+nombre+"' no tiene tamano utilizable";
     return "OK|"+ti.x+","+ti.y+","+ti.width+","+ti.height;
   }
-  public static bool PestanaSeleccionada(string nombre){
+  static bool PestanaSeleccionada_(string nombre){
     long t=PestanaNodo(nombre);
     if(t==0) return false;
     ACI2 ti; if(!Inf(t,out ti)) return false;
@@ -751,7 +805,7 @@ public static class Busca {
   // sitio y 'Suscripciones' no llego a seleccionarse nunca. Leer la geometria dos veces seguidas
   // y exigir que de lo mismo cuesta 300 ms y cierra ese agujero; ademas evita pulsar a ciegas
   // donde ni siquiera se sabe que hay.
-  public static bool EsperarPestanaExiste(string nombre,int seg){
+  static bool EsperarPestanaExiste_(string nombre,int seg){
     DateTime tope=DateTime.Now.AddSeconds(seg);
     string previo="";
     while(true){
@@ -764,7 +818,7 @@ public static class Busca {
       Pump(300);
     }
   }
-  public static bool EsperarPestana(string nombre,int seg){
+  static bool EsperarPestana_(string nombre,int seg){
     DateTime tope=DateTime.Now.AddSeconds(seg);
     while(DateTime.Now<tope){
       if(PestanaSeleccionada(nombre)) return true;
@@ -775,18 +829,20 @@ public static class Busca {
 
   static string Cel(long tbl,int idx){
     long c=Kid(tbl,idx); if(c==0) return "";
-    ACI2 i; if(!Inf(c,out i)) return "";
-    return i.name==null?"":i.name.Trim();
+    try{
+      ACI2 i; if(!Inf(c,out i)) return "";
+      return i.name==null?"":i.name.Trim();
+    } finally { Rel(c); }
   }
 
   // La tabla de Suscripciones se reconoce igual que en azul_fast.ps1: N x >=10 columnas y un
   // radio button en la celda 0. Columna 1 = numero, columna 7 = estado.
-  public static string ResumenSuscripciones(int maxFilas){
+  static string ResumenSuscripciones_(int maxFilas){
     long mejor=0; int R=0,C=0;
     foreach(long t in Find(root,(i,ac)=> i.role_en_US=="table",60000,false)){
       ATI2 ti; if(!getAccessibleTableInfo(vm,t,out ti)) continue;
       if(ti.columnCount<10||ti.rowCount<1) continue;
-      long c0=Kid(t,0); if(c0==0) continue;
+      long c0=Anota(Kid(t,0)); if(c0==0) continue;
       ACI2 i0; if(!Inf(c0,out i0)) continue;
       if(i0.role_en_US!="radio button") continue;
       if(ti.rowCount*ti.columnCount > R*C){ mejor=t; R=ti.rowCount; C=ti.columnCount; }
@@ -802,7 +858,7 @@ public static class Busca {
     return sb.ToString();
   }
 
-  public static string Resultado(int maxFilas){
+  static string Resultado_(int maxFilas){
     var sb=new StringBuilder();
     long res=MarcoResultados();
     if(res==0){ sb.AppendLine("No hay ninguna rejilla de resultados abierta."); return sb.ToString(); }
@@ -822,13 +878,41 @@ public static class Busca {
       for(int c=0;c<Math.Min(ti.columnCount,12);c++){
         long cc=Kid(t,r*ti.columnCount+c);
         string v="";
-        if(cc!=0){ ACI2 ci; if(Inf(cc,out ci)) v=(ci.name==null?"":ci.name.Trim()); }
+        if(cc!=0){ ACI2 ci; if(Inf(cc,out ci)) v=(ci.name==null?"":ci.name.Trim()); Rel(cc); }
         cel.Add(v);
       }
       sb.AppendLine("  fila "+(r+1)+": "+string.Join(" | ",cel.ToArray()));
     }
     return sb.ToString();
   }
+
+  // Las entradas publicas: cada una suelta al salir lo que encontro (ver Anota/Sal).
+  public static bool HayCIM(){ int m=Ent(); try{ return HayCIM_(); } finally{ Sal(m); } }
+  public static bool EsperarCIM(int seg){ int m=Ent(); try{ return EsperarCIM_(seg); } finally{ Sal(m); } }
+  public static string CamposConTexto(){ int m=Ent(); try{ return CamposConTexto_(); } finally{ Sal(m); } }
+  public static string EnfocarCF(){ int m=Ent(); try{ return EnfocarCF_(); } finally{ Sal(m); } }
+  public static string EnfocarSucio(){ int m=Ent(); try{ return EnfocarSucio_(); } finally{ Sal(m); } }
+  public static string LeerCF(){ int m=Ent(); try{ return LeerCF_(); } finally{ Sal(m); } }
+  public static string CommitCF(string cuenta){ int m=Ent(); try{ return CommitCF_(cuenta); } finally{ Sal(m); } }
+  public static string Firma(){ int m=Ent(); try{ return Firma_(); } finally{ Sal(m); } }
+  public static string Interaccion(){ int m=Ent(); try{ return Interaccion_(); } finally{ Sal(m); } }
+  public static string Marcos(){ int m=Ent(); try{ return Marcos_(); } finally{ Sal(m); } }
+  public static string GeoBotonBuscar(){ int m=Ent(); try{ return GeoBotonBuscar_(); } finally{ Sal(m); } }
+  public static string EsperarResultado(string antes,int seg){ int m=Ent(); try{ return EsperarResultado_(antes,seg); } finally{ Sal(m); } }
+  public static string Desenlace(string interAntes){ int m=Ent(); try{ return Desenlace_(interAntes); } finally{ Sal(m); } }
+  public static string EsperarInteraccion(string interAntes,int seg){ int m=Ent(); try{ return EsperarInteraccion_(interAntes,seg); } finally{ Sal(m); } }
+  public static string EsperarDesenlace(string interAntes,int seg){ int m=Ent(); try{ return EsperarDesenlace_(interAntes,seg); } finally{ Sal(m); } }
+  public static int FilasConDatos(){ int m=Ent(); try{ return FilasConDatos_(); } finally{ Sal(m); } }
+  public static string SeleccionarFila(int fila){ int m=Ent(); try{ return SeleccionarFila_(fila); } finally{ Sal(m); } }
+  public static string FilaTexto(int fila){ int m=Ent(); try{ return FilaTexto_(fila); } finally{ Sal(m); } }
+  public static string GeoCelda(int fila,int col){ int m=Ent(); try{ return GeoCelda_(fila,col); } finally{ Sal(m); } }
+  public static string GeoBotonResultados(string nombre){ int m=Ent(); try{ return GeoBotonResultados_(nombre); } finally{ Sal(m); } }
+  public static string GeoPestana(string nombre){ int m=Ent(); try{ return GeoPestana_(nombre); } finally{ Sal(m); } }
+  public static bool PestanaSeleccionada(string nombre){ int m=Ent(); try{ return PestanaSeleccionada_(nombre); } finally{ Sal(m); } }
+  public static bool EsperarPestanaExiste(string nombre,int seg){ int m=Ent(); try{ return EsperarPestanaExiste_(nombre,seg); } finally{ Sal(m); } }
+  public static bool EsperarPestana(string nombre,int seg){ int m=Ent(); try{ return EsperarPestana_(nombre,seg); } finally{ Sal(m); } }
+  public static string ResumenSuscripciones(int maxFilas){ int m=Ent(); try{ return ResumenSuscripciones_(maxFilas); } finally{ Sal(m); } }
+  public static string Resultado(int maxFilas){ int m=Ent(); try{ return Resultado_(maxFilas); } finally{ Sal(m); } }
 }
 '@
 
@@ -867,6 +951,7 @@ if ($Restaurar) {
 }
 try { $hwnd = Get-AzulHwnd } catch { "ERROR: $($_.Exception.Message)"; exit 1 }
 [Busca]::PROG = Join-Path $PSScriptRoot 'progreso.txt'
+[Busca]::LIBERAR = -not $SinLiberar
 if (-not [Busca]::Init($hwnd)) { "ERROR: sin contexto raiz. El puente no ve a Azul."; exit 1 }
 
 # Auxiliares comunes. Viven FUERA del bloque de busqueda porque -DesdeResultados se lo
@@ -1299,9 +1384,36 @@ function Test-TramoVencido { (Get-Date) -ge $topeTramo }
 function Get-TramoRestanteSeg { [Math]::Max(0, [int][Math]::Ceiling(($topeTramo - (Get-Date)).TotalSeconds)) }
 
 ""
+# ATAJO RAPIDO (Dorian, 29/09/2026). En todas las corridas medidas hasta hoy la pestana
+# 'Suscripciones' broto siempre en el mismo sitio relativo a la ventana, 892,341. Se intenta
+# ESE clic directo, SIN recorrer el arbol para localizarla, y se comprueba UNA sola vez si de
+# verdad quedo seleccionada. Si el atajo no prende -- por ejemplo porque la pestana se movio,
+# como paso el 17/09/2026 con otro cliente y tumbo dos corridas -- se cae entero al camino de
+# siempre (EsperarPestanaExiste + GeoPestana + reintento, sin tocar), sin perder mas que el
+# medio segundo del intento. Nunca se da la pestana por buena sin que Azul confirme
+# 'selected'; eso es lo que hace que este atajo no reintroduzca el fallo del 17/09.
+$suscripcionesRapido = $false
+if ([Busca]::PestanaSeleccionada('Suscripciones')) {
+  "La pestana 'Suscripciones' ya estaba abierta."
+  $suscripcionesRapido = $true
+} else {
+  [void][AzulShot]::Frente($hwnd)
+  Start-Sleep -Milliseconds 500   # deja que la tira de pestanas termine de pintarse
+  [void](Invoke-AzulClick -Hwnd $hwnd -X 892 -Y 341)
+  Start-Sleep -Milliseconds 300
+  if ([Busca]::PestanaSeleccionada('Suscripciones')) {
+    [Busca]::Nota("atajo: clic directo en Suscripciones (892,341) funciono, sin recorrer el arbol")
+    "Pestana 'Suscripciones' pulsada con el atajo rapido en 892,341."
+    $suscripcionesRapido = $true
+  } else {
+    [Busca]::Nota("atajo: clic directo en Suscripciones no prendio (pestana movida o aun sin pintar); camino de siempre")
+  }
+}
+
 # Ahora se llega aqui EN CUANTO Azul abre el marco de interaccion, que puede ser un pelo antes
 # de que sus pestanas esten colocadas. Se espera a que la pestana exista y ADEMAS este quieta:
 # pulsarla mientras la tira de pestanas todavia se mueve manda el clic a la posicion vieja.
+if (-not $suscripcionesRapido) {
 if (-not [Busca]::EsperarPestanaExiste('Suscripciones', (Get-TramoRestanteSeg))) {
   "ERROR: la pestana 'Suscripciones' no llego a quedarse quieta dentro del tope de tramo de $TRAMO_SEG s."
   "Captura: $(Save-Prueba -Etiqueta 'pestana_sin_aparecer')"
@@ -1340,6 +1452,7 @@ if ([Busca]::PestanaSeleccionada('Suscripciones')) {
       exit 1
     }
   }
+}
 }
 
 # Las lineas tardan en pintarse despues de que la pestana se selecciona: se espera a que la
@@ -1387,4 +1500,5 @@ if ($resumen -eq "") {
 # Total de la corrida. Se compara contra otra corrida del mismo cliente para ver si un
 # cambio de rendimiento sirvio, sin depender de lo cargado que estuviera Azul.
 "Llamadas JAB de arbol: $([Busca]::Llamadas())"
-[Busca]::Nota("buscar_cuenta: JAB total = " + [Busca]::Llamadas())
+try { [Busca]::Soltar() } catch { }
+[Busca]::Nota("buscar_cuenta: JAB total = " + [Busca]::Llamadas() + ", liberados: " + [Busca]::Liberados() + $(if ($SinLiberar) { " (sin liberar)" } else { "" }))

@@ -5,7 +5,105 @@
 > Al informar, distinguir **siempre** lo que está probado contra Azul real de lo que solo
 > está escrito. Esa distinción importa más que cualquier otra cosa en este proyecto.
 
-**Última actualización:** 09/09/2026 — **las bases automáticas vuelven, ahora con memoria
+**Última actualización:** 30/09/2026 — **el puente JAB ya suelta lo que pide.** Java Access
+Bridge retiene en el heap de Azul cada objeto que devuelve (contextos, hijos del árbol,
+info de tablas) hasta que el cliente llama `releaseJavaObject` — lo dice la documentación de
+Oracle — y hasta hoy el proyecto no la llamaba nunca, con decenas de miles de llamadas por
+cliente. Ahora:
+
+- `azul_fast.ps1`: se sueltan los nodos descartados en `Find()`, las celdas leídas
+  (`Cel`/`Txt`), los hijos revisados en los barridos de panes, los marcos que solo se
+  consultan (`NombreDe`/`GeoDe`/`Hay`), el detalle y la tabla de atributos de cada línea, las
+  tablas que no son la de Suscripciones, y `root`/`panes` al volver a iniciar y al terminar
+  (`Soltar()`). `getAccessibleTableInfo` suelta en el acto los cuatro objetos que trae
+  (título, resumen, contexto, tabla), que nadie usa.
+- **Memoria de la tabla de atributos** (`TxtM`): cada celda de valor se pide una sola vez por
+  línea, en vez de 4-5 veces (plan, sufijo, marca/modelo, nombre comercial).
+- `buscar_cuenta.ps1`: lo que devuelven `Find` y `MarcoPanes` se anota y se suelta al salir de
+  cada función pública (`Anota`/`Ent`/`Sal`); cubre `Firma()`, que se llama en cada vuelta
+  de la espera del resultado. Queda fuera lo que se guarda a propósito (root, panes, la
+  pestaña recordada).
+- `-SinLiberar` en `lote.ps1` y en los dos hijos deja el comportamiento de antes.
+
+**Probado contra Azul real, el mismo día.** Paso 1 (Find/celdas/barridos): 5 clientes con
+Azul ya en su techo, 4 escritos y resultados coherentes. Todo junto: **BASE 035 PS1
+completa**, Azul recién abierto, 31 min, 20 clientes recorridos, 6 escritos, **0 a revisar,
+0 cortes de tiempo, 0 lecturas fallidas, cuadre correcto en todos**; tiempos por cliente
+estables (1-3 min según líneas). Se sueltan ~50% de las llamadas JAB (20 000-40 000 objetos
+por cliente). Soltar no rompió la lectura: con el paso 1, dos clientes leídos el 29/09 sin el
+cambio dieron hoy exactamente lo mismo (11 renovables; 11/5/4). Con el cambio completo no se
+releyó ningún cliente ya conocido, así que esa comparación queda pendiente.
+
+**Lo que NO se puede afirmar todavía.** Si Azul aguanta más que antes: no hay corrida de
+comparación con `-SinLiberar` en las mismas condiciones. Medido con `medir_proceso.ps1`:
+la memoria privada **nace** en ~1716 MB (es la reserva normal de Azul, no una fuga: el
+1.7 GB del incidente del 17/09 no dice nada por sí solo); la memoria de trabajo subió de
+842 a 1757 MB en 20 min y ahí se quedó; y el CPU de Azul por tercios de la corrida fue
+**63% → 70% → 78%** de un núcleo — sin pegarse al 100%, pero la tendencia sigue ahí.
+
+**Encontrado, sin arreglar:**
+- **Relanzar la misma lista tras cerrar una base DUPLICA clientes.** `Find-ClienteEnBases`
+  solo recuerda los de la base abierta: las cerradas guardan el conteo, no las cuentas. La
+  segunda tanda del 30/09 empezó a releer al primer cliente de la BASE 035 recién cerrada; se
+  detuvo antes de escribir, no se duplicó nada. Hasta arreglarlo: no relanzar una lista
+  desde arriba después de que se cierre una base.
+- La última actualización de las SIM (Historial de cambio) **nunca ha leído una fecha** contra
+  Azul real — ya salía "sin renovación registrada (o no se pudo leer)" antes del cambio de
+  hoy. Sigue siendo el pendiente 6 de la tabla de abajo.
+
+**29/09/2026** — **diagnóstico de "sin contexto raíz" en la prueba de
+3 clientes: no se reprodujo.** Con Azul abierto (el mismo PID de jp2launcher, 13384, que había
+fallado antes según el reporte por correo), se repitió la batería de lectura pura: las dos
+copias de `WindowsAccessBridge-32.dll` (SysWOW64 y el JRE) son idénticas — mismo tamaño
+(178816 bytes), misma versión (8.0.4510.10) y mismo SHA256 —, `jp2launcher` tiene cargadas
+`JavaAccessBridge-32.dll` y `JAWTAccessBridge-32.dll`, corre en la misma sesión de Windows que
+el script (SessionId 2) y sin elevación, y `AtBroker.exe` sigue sin estar corriendo. Con todo
+eso igual que en el reporte original, `jab_now.ps1` **sí obtuvo el contexto raíz** esta vez:
+1020 nodos, el marco `Búsqueda: Contacto y Suscripción` visible y el botón
+`Ver Productos Asignados` habilitado. `verificar.ps1` dio `TODO OK`. Ninguna de las
+comprobaciones de configuración explica por qué falló antes ni por qué respondió ahora — ver
+`docs/bitacora.md`. **Confirmado con `lote.ps1 -Limite 3` contra Azul real, misma sesión:**
+2 clientes escritos en `BASE 034 PS1 VIRLAN.docx` (11 renovables cada uno, más 5 no
+renovables y 4 canceladas en el segundo), 1 fallo correcto por guarda de seguridad (un
+tercer cliente: la rejilla trajo 5 resultados y la primera fila no mencionaba su razón
+social — el sistema no entró y lo saltó, tal como debe). El puente
+respondió sin un solo `ERROR: sin contexto raiz` en los 9.5 min de corrida (112 723 llamadas
+JAB combinadas). Base 034 PS1 quedó guardada y cerrada con 2 de 10. **Pendiente de Dorian:**
+revisar ese cliente a mano en Azul (sale como `FALLO BUSQUEDA` en
+`azul\salidas\lote_progreso.csv`, que no sale de la máquina) — decidir si la cuenta correcta
+es alguna otra fila de esa rejilla de 5 antes de forzarla con `-Forzar`.
+
+**29/09/2026** — **`-FusionarProcesos` en `lote.ps1`** (Paso 3 del
+análisis de rendimiento): `azul\cliente.ps1` fusiona `buscar_cuenta.ps1` y `azul_fast.ps1` en
+un solo proceso de PowerShell de 32 bits por cliente, para ahorrarse un arranque de proceso
+entero. **Apagado por defecto** — sin el switch, `lote.ps1` corre exactamente igual que antes,
+byte a byte, con los dos procesos de siempre. Verificado sin Azul: los tres bloques de C#
+(`AzulShot`, `Azul`, `Busca`) compilan juntos en un mismo proceso sin chocar de nombres
+(`buscar_cuenta.ps1` ya usa `ACI2`/`ATI2`/`MSG2`, no `ACI`/`ATI`/`MSG`), ninguna función se
+repite entre los dos scripts, y los cuatro gates (`verificar.ps1`, `probar_bases.ps1`,
+`probar_lista.ps1`) siguen en `TODO OK`. **Nada de esto se ha corrido contra Azul real** — ni
+la búsqueda ni la lectura fusionadas se han visto funcionar con un cliente de verdad. Antes de
+usarlo en una corrida real: correrlo con Dorian delante en 2-3 clientes y comparar contra una
+corrida igual sin el switch (mismo CSV, mismo `lote_progreso.csv`, y que `FALLO BUSQUEDA` /
+`FALLO LECTURA` sigan distinguiéndose bien via la marca `salidas\.busqueda_ok`).
+
+**29/09/2026** — **script de medición del proceso** (Paso 1 del análisis
+de rendimiento, `azul\diagnostico\medir_proceso.ps1`): muestrea `Get-Process jp2launcher` desde
+fuera (memoria, CPU, hilos) sin tocar el puente. **Probado de verdad**, no solo escrito: al
+correrlo en esta máquina, Azul ya estaba abierto y midió **1717.8 MB de memoria privada** — el
+mismo número, casi exacto, del incidente de `lote.ps1:499` ("Azul murió a los 32 min con
+1.7 GB", 17/09/2026). Sigue sin saberse si ESTA sesión de Azul lleva ya rato abierta o si ese
+nivel de memoria es normal más temprano en la sesión; para eso hace falta correr el script desde
+el arranque de una sesión real de Azul y ver si sube con el tiempo o si ya nace así.
+
+**29/09/2026** — **sufijo del plan (MPP/CPP, CTRL/LIBRE) y última
+actualización de una SIM (Bulk Renewal)** en `azul_fast.ps1`, a partir del PROMPT que dejó
+Dorian. El sufijo reutiliza la ficha que el lector ya abre (bajo riesgo); la lectura del
+Historial de cambio abre una pestaña que este script nunca había tocado, así que el nombre de
+la pestaña, el del botón "Ver Todo" y el rol `page tab` son los que trae el PROMPT, no un
+volcado de este script. **Nada de esto se ha corrido contra Azul real.**
+
+**09/09/2026** — **las bases automáticas vuelven, ahora con memoria
 real** (`azul\bases.ps1`, carpeta `azul\bases`, numeración desde la 034). Revierte la etapa 4
 de la simplificación sin traer de vuelta el fallo que la motivó. Antes de eso: simplificación
 completa de seis etapas, la **etapa 5.4** (tope de tramo de 10 s) y la **restauración de la
@@ -39,6 +137,10 @@ Va en orden: **primero lo que no toca Azul**, después lo que sí. No saltes el 
 | 2 | **El hueco `[imagen]` en Word** *(etapa 1)* | `diagnostico\probar_word.ps1` — **ya no hace falta cerrar Word**: usa su propio Word y su propio documento | Mira: **una sola** línea `[imagen]`, orden `cuenta → razón social → [imagen] → RENOVABLES`, **cuatro** tablas separadas (trampa 12), canceladas en tabla de una columna |
 | 3 | **El CSV real, no uno sintético** *(etapa 2)* | Exporta tu lista de verdad y corre `lote.ps1 -Simular -Lista <ruta>` | Comprueba el número de clientes, las repetidas marcadas, **y que no falte ninguna en silencio**. Fuerza una fila rota a propósito y comprueba que se queja |
 | 4 | **La simulación con tu CSV y las bases** | `lote.ps1 -Simular` y `lote.ps1 -VerBases` | La simulación dice en qué base caería cada cliente y dónde está el corte de los 10. `-VerBases` dice qué base está abierta y quién va dentro |
+| 5 | **Sufijo del plan (MPP/CPP, CTRL/LIBRE)** *(29/09/2026)* | `azul_fast.ps1` con `-VolcarCampos` contra una línea con contrato: mirar en el progreso si "Tipo de Número" y "Tipo de Suscripción" aparecen tal cual, y si el `plan` de salida trae el sufijo correcto | Si el campo no aparece con ese nombre exacto, el sufijo se queda vacío sin avisar — comparar el volcado contra `docs/mapa-datos.md` y ajustar `L_TNUM`/`L_TSUS` |
+| 6 | **Última actualización de una SIM (Historial de cambio → Ver Todo → Bulk Renewal)** *(29/09/2026)* | `azul_fast.ps1` contra una línea SIM conocida (p. ej. una de las 4 del PROMPT): ver si la nota trae la fecha de la última Bulk Renewal y si coincide con lo mirado a mano | Es lo más nuevo y lo más arriesgado del cambio: si la pestaña no se llama exactamente "Historial de cambio", o "Ver Todo" no es un `push button`, o el rol de la pestaña no es `page tab`, `LeerUltimaBulkSim` vuelve vacío en silencio (la nota dirá "sin renovación registrada... (o no se pudo leer)", que no distingue las dos causas). Si eso pasa, correr `-VolcarCampos` en esa pestaña y ajustar `LeerUltimaBulkSim` con lo que de verdad haya |
+| 7 | **`lote.ps1 -FusionarProcesos`** *(29/09/2026, Paso 3 del análisis de rendimiento)* | 2-3 clientes con Dorian delante, comparando contra la misma lista SIN el switch: mismo CSV de salida, mismo conteo de renovables/revisar, y que `lote_progreso.csv` siga diciendo `FALLO BUSQUEDA` o `FALLO LECTURA` correctamente si algo falla a propósito | Apagado por defecto — sin el switch, `lote.ps1` no cambia en nada. Verificado sin Azul: compila el C# de los tres scripts junto en un proceso de prueba, sin choques de nombre, y los gates siguen en `TODO OK`. Lo único que no se puede probar sin Azul es si `buscar_cuenta.ps1` y `azul_fast.ps1`, corriendo uno detrás del otro en el mismo proceso, se comportan igual que en dos procesos separados |
+| 8 | **Comparar con y sin liberar** *(30/09/2026 — la liberación YA se probó contra Azul real, ver arriba; falta solo la comparación)* — el puente retiene en el heap de Azul (512 MB, fijado por el JNLP del proveedor) cada objeto que devuelve hasta que se llama `releaseJavaObject` (doc. de Oracle), y hasta hoy no se llamaba nunca. Hipótesis: es la causa de que Azul se degrade con el uso (13→2 renovables con un núcleo al 100%, el 5º cliente que colapsa). Ahora se liberan los nodos descartados en `Find()`, las celdas leídas y los barridos de panes. **Encendido por defecto**; `-SinLiberar` (en `lote.ps1` y en los dos hijos) deja lo de antes | Con Azul recién abierto y `medir_proceso.ps1` corriendo: los mismos 5 clientes con `lote.ps1 -SinLiberar` (A) y, tras cerrar y reabrir Azul, sin el switch (B). Comparar memoria/CPU del CSV, tiempo por cliente y que los resultados sean **idénticos**. El progreso dice `liberados: N` — debe ser >0 en B | Si B da datos distintos a A o una lectura falla donde A no: se liberó algo que se seguía usando — correr con `-SinLiberar` y avisar. Si B no mejora nada, la degradación viene de otro lado (Chromium embebido o servidor) |
 
 > **Las cuatro comprobaciones del documento activo (etapa 4) ya no existen**, porque ya no hay
 > documento activo que comprobar: el lote crea y abre la base él mismo. Solo siguen vivas en
